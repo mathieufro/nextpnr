@@ -99,7 +99,6 @@ void GateMateImpl::route_clock()
                 }
                 reserved_wires.insert({src, net->name});
             }
-
         }
     };
 
