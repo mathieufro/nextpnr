@@ -9,6 +9,10 @@
 .cache
 cmake-build-*/
 Makefile
+# P0.T41 (C8, D77, F88): the root Makefile is the gate's single entry point
+# (`make gate`), not a cmake build artefact -- only cmake-generated
+# Makefiles below the out-of-tree build dir stay ignored.
+!/Makefile
 cmake_install.cmake
 compile_commands.json
 CMakeFiles
