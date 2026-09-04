@@ -20,7 +20,7 @@ struct GowinCstReader
     Context *ctx;
     std::istream &in;
 
-    GowinCstReader(Context *ctx, std::istream &in) : ctx(ctx), in(in){};
+    GowinCstReader(Context *ctx, std::istream &in) : ctx(ctx), in(in) {};
 
     const PadInfoPOD *pinLookup(const PadInfoPOD *list, const size_t len, const IdString idx)
     {
@@ -72,6 +72,41 @@ struct GowinCstReader
         return BelId();
     }
 
+    // INS_LOC "<cell>" R<row>C<col>[<cls>][A|B] names a CLS half-slot in the tile
+    // at (col-1, row-1).  gowin_arch_gen.py creates LUT<i> at z = i*2 and DFF<i>
+    // at z = i*2+1, with i = cls*2 + (half == "B"), so the LUT of a half-slot and
+    // its DFF are adjacent z's.  Returns BelId() when nothing there can hold the
+    // cell.
+    BelId getConstrainedCLSBel(CellInfo *cell, int col, int row, int cls, const std::string &half)
+    {
+        int x = col - 1;
+        int y = row - 1;
+        if (x < 0 || y < 0 || x >= ctx->getGridDimX() || y >= ctx->getGridDimY()) {
+            return BelId();
+        }
+        int idx = cls * 2 + (half == "B" ? 1 : 0);
+        int lut_z = BelZ::LUT0_Z + idx * 2;
+
+        // A LUT-class cell can only take the LUT z, a DFF/latch-class cell only the
+        // DFF z; anything else (ALU, MUX, ...) is tried on both and validated.
+        std::vector<int> candidates;
+        if (type_is_lut(cell->type)) {
+            candidates.push_back(lut_z);
+        } else if (type_is_dff(cell->type) || type_is_latch(cell->type)) {
+            candidates.push_back(lut_z + 1);
+        } else {
+            candidates.push_back(lut_z);
+            candidates.push_back(lut_z + 1);
+        }
+        for (int z : candidates) {
+            BelId bel = ctx->getBelByLocation(Loc(x, y, z));
+            if (bel != BelId() && ctx->isValidBelForCellType(cell->type, bel)) {
+                return bel;
+            }
+        }
+        return BelId();
+    }
+
     bool run(void)
     {
         pool<std::pair<IdString, IdStringList>> constrained_cells;
@@ -97,6 +132,11 @@ struct GowinCstReader
                     std::regex("INS_LOC +\"([^\"]+)\" +(TOP|RIGHT|BOTTOM|LEFT)SIDE\\[([0,1])\\] *;*[\\s\\S]*");
             std::regex clockre = std::regex("CLOCK_LOC +\"([^\"]+)\" +BUF([GS])(\\[([0-7])\\])?[^;]*;.*[\\s\\S]*");
             std::regex adcre = std::regex("USE_ADC_SRC +bus([0-9]) +IO([TRBL])([0-9]+) *;.*[\\s\\S]*");
+            // Third INS_LOC spelling shipped by the vendor: a placement-macro name,
+            // e.g. INS_LOC "u_Gowin_PLL_AE350/PLL_inst" PLL_R[0]; or INS_LOC "u/u_dll"
+            // DDRDLLM_BL;.  Matched LAST so it can never steal inslocre or hclkre.
+            std::regex inslocmacrore =
+                    std::regex("INS_LOC +\"([^\"]+)\" +([A-Z][A-Z0-9_]*)(\\[([0-9])\\])? *;.*[\\s\\S]*");
             std::smatch match, match_attr, match_pinloc;
             std::string line, pinlines[2];
             std::vector<IdStringList> constrained_clkdivs;
@@ -107,7 +147,8 @@ struct GowinCstReader
                 insloc,
                 clock,
                 hclk,
-                adc
+                adc,
+                inslocmacro
             } cst_type;
 
             while (!in.eof()) {
@@ -133,6 +174,8 @@ struct GowinCstReader
                                 } else {
                                     if (std::regex_match(line, match, adcre)) {
                                         cst_type = adc;
+                                    } else if (std::regex_match(line, match, inslocmacrore)) {
+                                        cst_type = inslocmacro;
                                     } else {
                                         if ((!line.empty()) && (line.rfind("//", 0) == std::string::npos)) {
                                             log_warning("Invalid constraint: %s\n", line.c_str());
@@ -268,6 +311,33 @@ struct GowinCstReader
                         log_error("No Bel of type CLKDIV found at constrained location %sSIDE[%s]\n",
                                   match[2].str().c_str(), match[3].str().c_str());
                     }
+                } break;
+                case insloc: { // INS_LOC name RrCc[cls][A|B]
+                    int row = std::stoi(match[2]);
+                    int col = std::stoi(match[3]);
+                    int cls = std::stoi(match[4]);
+                    std::string half = match[5].str();
+                    BelId bel = getConstrainedCLSBel(it->second.get(), col, row, cls, half);
+                    if (bel == BelId()) {
+                        log_error("No Bel able to hold cell %s (type %s) at constrained location "
+                                  "R%dC%d[%d][%s]\n",
+                                  net.c_str(ctx), it->second->type.c_str(ctx), row, col, cls, half.c_str());
+                    }
+                    it->second->setAttr(id_BEL, ctx->getBelName(bel).str(ctx));
+                    debug_cell(it->second->name, ctx->getBelName(bel));
+                } break;
+                case inslocmacro: { // INS_LOC name <MACRO>[idx]
+                    // Placement macros are resolved through a named table.  It is
+                    // APPEND-ONLY: the PLL_* rows land with the PLL work and the
+                    // DDRDLL* rows with the DLL work; an unresolved macro is an
+                    // error, never a silent IO_PORT fall-through.
+                    static const dict<std::string, IdString> macro_bel_type = {};
+                    std::string macro = match[2].str();
+                    auto mit = macro_bel_type.find(macro);
+                    if (mit == macro_bel_type.end()) {
+                        log_error("Unknown placement macro %s in INS_LOC for cell %s\n", macro.c_str(), net.c_str(ctx));
+                    }
+                    // (resolver rows are appended here alongside their macro entry)
                 } break;
                 default: { // IO_PORT attr=value
                     std::string attr_val = match[2];
