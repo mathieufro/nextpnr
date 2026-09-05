@@ -403,6 +403,23 @@ void GowinPacker::pack_dcs(void)
 // =========================================
 void GowinPacker::pack_dhcens(void)
 {
+    // The GW5A family spells this primitive DHCE and its enable port CEN --
+    // DHCEN does not exist there at all (GowinSynthesis answers
+    // "ERROR (EX3937) : Instantiating unknown module 'DHCEN'", and yosys' own
+    // gowin/cells_xtra_gw5a.v carries DHCE(CLKIN, CEN, CLKOUT)).  The bel, the
+    // packer below and globals.cc's route_dhcen_net are spelling-agnostic once
+    // the cell is renamed, so normalise the two names here instead of carrying
+    // a second cell type through the whole flow.
+    for (auto &cell : ctx->cells) {
+        auto &ci = *cell.second;
+        if (ci.type == id_DHCE) {
+            ci.type = id_DHCEN;
+            if (ci.ports.count(id_CEN)) {
+                ci.renamePort(id_CEN, id_CE);
+            }
+        }
+    }
+
     // Allocate all available dhcen bels; we will find out which of them
     // will actually be used during the routing process.
     bool grab_bels = false;
