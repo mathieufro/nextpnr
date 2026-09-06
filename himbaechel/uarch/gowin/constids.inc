@@ -1458,3 +1458,8 @@ X(HCLK53)
 // DHCEN itself does not exist on the family -- GowinSynthesis EX3937)
 X(DHCE)
 X(CEN)
+
+// gw5a DCE: the GW5A spelling of DQCE (primitive DCE(CLKIN, CE, CLKOUT);
+// DQCE itself does not exist on the family -- GowinSynthesis EX3937, and
+// UG306-1.0.1E S3.1 names it DCE)
+X(DCE)

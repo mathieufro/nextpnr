@@ -386,6 +386,18 @@ void GowinPacker::pack_dqce(void)
     // We do this here because the decision about which physical DQCEs to
     // use is made during routing, but some of the information (let’s say
     // mapping cell pins -> bel pins) is filled in before routing.
+    // The GW5A family spells the primitive DCE, not DQCE (GowinSynthesis
+    // answers EX3937 for DQCE; UG306-1.0.1E S3.1 names it DCE).  Only the
+    // cell is renamed -- the ports are the same -- so normalise the two names
+    // here instead of carrying a second cell type through the whole flow, the
+    // same way DHCE is normalised onto DHCEN.
+    for (auto &cell : ctx->cells) {
+        auto &ci = *cell.second;
+        if (ci.type == id_DCE) {
+            ci.type = id_DQCE;
+        }
+    }
+
     bool grab_bels = false;
     for (auto &cell : ctx->cells) {
         auto &ci = *cell.second;
