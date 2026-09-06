@@ -317,3 +317,7 @@ Links and references
 - [Arachne PNR](https://github.com/cseed/arachne-pnr)
 - [VPR/VTR](https://verilogtorouting.org/)
 - [SymbiFlow](https://github.com/SymbiFlow/symbiflow-arch-defs)
+
+## Local gate
+
+`.githooks/pre-push` is a no-op by default (D181, 2026-09-06): a landing is checked by targeted tests, and full gates run once at phase close; set `LANDING_GATE=1` for one push to re-arm the old detached `make gate GATE_SCOPE=branch` run.
