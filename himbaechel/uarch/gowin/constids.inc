@@ -1453,3 +1453,8 @@ X(HCLK50)
 X(HCLK51)
 X(HCLK52)
 X(HCLK53)
+
+// gw5a DHCE: the GW5A spelling of DHCEN (primitive DHCE(CLKIN, CEN, CLKOUT);
+// DHCEN itself does not exist on the family -- GowinSynthesis EX3937)
+X(DHCE)
+X(CEN)

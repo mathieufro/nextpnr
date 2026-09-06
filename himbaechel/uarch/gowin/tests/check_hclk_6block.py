@@ -31,14 +31,23 @@ CONSTIDS = "himbaechel/uarch/gowin/constids.inc"
 GOWIN_CC = "himbaechel/uarch/gowin/gowin.cc"
 NEW_ID_RE = re.compile(r"^X\(HCLK[45][0-3]\)$")
 
-REPO = subprocess.run(
-    ["git", "rev-parse", "--show-toplevel"],
-    cwd=os.path.dirname(os.path.abspath(__file__)),
-    capture_output=True, text=True, check=True).stdout.strip()
+# This file lives at <repo>/himbaechel/uarch/gowin/tests/, so the repo root is
+# four levels up.  Derived from the file's own path rather than from
+# `git rev-parse --show-toplevel`, which answers relative to GIT_DIR when git
+# itself is the caller -- and git is the caller here, from the pre-commit hook.
+REPO = os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 os.pardir, os.pardir, os.pardir, os.pardir))
+
+# The hook exports GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE for the commit being
+# made; they would override `-C REPO` and, worse, make `git show` read the
+# staged index.  Strip them so the checks see the worktree they are checking.
+_GIT_ENV = {k: v for k, v in os.environ.items()
+            if not k.startswith("GIT_")}
 
 
 def git(*args):
-    return subprocess.run(["git", "-C", REPO, *args],
+    return subprocess.run(["git", "-C", REPO, *args], env=_GIT_ENV,
                           capture_output=True, text=True, check=True).stdout
 
 
@@ -47,18 +56,29 @@ def test_constids_appended_only_hclk_6block():
     base_text = git("show", f"{base}:{CONSTIDS}")
     n_base = len(base_text.splitlines())
     with open(os.path.join(REPO, CONSTIDS)) as f:
-        n_now = len(f.read().splitlines())
-    assert n_now == n_base + 8, f"constids.inc: {n_now} lines, expected {n_base} + 8"
+        now_lines = f.read().splitlines()
+    n_now = len(now_lines)
+    assert n_now >= n_base + 8, f"constids.inc: {n_now} lines, expected >= {n_base} + 8"
 
     diff = git("diff", "--unified=0", base, "--", CONSTIDS).splitlines()
     removed = [l for l in diff if l.startswith("-") and not l.startswith("---")]
     added = [l[1:] for l in diff if l.startswith("+") and not l.startswith("+++")]
     assert not removed, f"constids.inc: {len(removed)} deleted/modified line(s): {removed}"
-    assert len(added) == 8, f"constids.inc: {len(added)} added line(s), expected 8"
-    bad = [l for l in added if not NEW_ID_RE.match(l)]
-    assert not bad, f"constids.inc: added lines not matching X(HCLK[45][0-3]): {bad}"
+    # Append-only (F55) is the contract, not "exactly these eight lines": later
+    # branches append their own ids to the same registry, and P1.T26 already
+    # does (X(DHCE), X(CEN)).  What must stay true is that nothing is deleted or
+    # modified, that the eight P1.T10 ids are all present, and that they are
+    # still the *first* thing appended after the base -- so a rebase that
+    # reorders or drops them is caught.
+    new_ids = [l for l in added if NEW_ID_RE.match(l)]
+    assert len(new_ids) == 8, (
+        f"constids.inc: {len(new_ids)} X(HCLK[45][0-3]) line(s) added, expected 8")
+    assert now_lines[n_base:n_base + 8] == new_ids, (
+        "constids.inc: the eight P1.T10 ids are no longer the first lines "
+        f"appended after {base[:12]}: {now_lines[n_base:n_base + 8]}")
     expect = {f"X(HCLK{b}{w})" for b in (4, 5) for w in range(4)}
-    assert set(added) == expect, f"constids.inc: added {sorted(added)}, expected {sorted(expect)}"
+    assert set(new_ids) == expect, (
+        f"constids.inc: HCLK ids added {sorted(new_ids)}, expected {sorted(expect)}")
 
 
 def test_hclk_fclk_map_covers_six_blocks():
