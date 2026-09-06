@@ -72,7 +72,7 @@ bool GowinUtils::driver_is_clksrc(const PortRef &driver)
         }
     }
     // PLL outputs
-    if (driver.cell->type.in(id_rPLL, id_PLLVR, id_PLLA)) {
+    if (driver.cell->type.in(id_rPLL, id_PLLVR, id_PLLA, id_PLL)) {
         if (driver.port.in(id_CLKOUT, id_CLKOUTD, id_CLKOUTD3, id_CLKOUTP, id_CLKOUT0, id_CLKOUT1, id_CLKOUT2,
                            id_CLKOUT3, id_CLKOUT4, id_CLKOUT5, id_CLKOUT6, id_CLKOUT7)) {
             if (ctx->debug) {

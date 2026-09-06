@@ -325,6 +325,22 @@ class HclkDiv2(BBAStruct):
         bba.u16(self.z)
 
 @dataclass
+class MacroBel(BBAStruct):
+    """One site addressable by a vendor placement macro, e.g. `PLL_L[0]`."""
+    name: IdString
+    x: int
+    y: int
+    z: int
+
+    def serialise_lists(self, context: str, bba: BBAWriter):
+        pass
+    def serialise(self, context: str, bba: BBAWriter):
+        bba.u32(self.name.index)
+        bba.u16(self.x)
+        bba.u16(self.y)
+        bba.u32(self.z)
+
+@dataclass
 class ChipExtraData(BBAStruct):
     strs: StringPool
     flags: int
@@ -342,6 +358,7 @@ class ChipExtraData(BBAStruct):
     spine_select_wires_bottom: list[SpineSelectWire] = field(default_factory = list)
     io_to_hclk: list[Io2Hclk] = field(default_factory = list)
     hclk_div2: list[HclkDiv2] = field(default_factory = list)
+    macro_bels: list[MacroBel] = field(default_factory = list)
 
     def set_dcs_prefix(self, prefix: str):
         self.dcs_prefix = self.strs.id(prefix)
@@ -394,6 +411,9 @@ class ChipExtraData(BBAStruct):
     def add_hclkdiv2(self, hclk_idx: int, x: int, y: int, z: int):
         self.hclk_div2.append(HclkDiv2(hclk_idx, x, y, z))
 
+    def add_macro_bel(self, macro: str, x: int, y: int, z: int):
+        self.macro_bels.append(MacroBel(self.strs.id(macro), x, y, z))
+
     def serialise_lists(self, context: str, bba: BBAWriter):
         self.bottom_io.serialise_lists(f"{context}_bottom_io", bba)
         for i, t in enumerate(self.segments):
@@ -428,6 +448,9 @@ class ChipExtraData(BBAStruct):
         bba.label(f"{context}_hclk_div2")
         for i, t in enumerate(self.hclk_div2):
             t.serialise(f"{context}_hclk_div2{i}", bba)
+        bba.label(f"{context}_macro_bels")
+        for i, t in enumerate(self.macro_bels):
+            t.serialise(f"{context}_macro_bel{i}", bba)
 
     def serialise(self, context: str, bba: BBAWriter):
         bba.u32(self.flags)
@@ -445,6 +468,7 @@ class ChipExtraData(BBAStruct):
         bba.slice(f"{context}_spine_select_wires_bottom", len(self.spine_select_wires_bottom))
         bba.slice(f"{context}_io_to_hclk", len(self.io_to_hclk))
         bba.slice(f"{context}_hclk_div2", len(self.hclk_div2))
+        bba.slice(f"{context}_macro_bels", len(self.macro_bels))
 
 @dataclass
 class PackageExtraData(BBAStruct):
@@ -935,6 +959,8 @@ dcs_bels = {}
 
 # map HCLKIN wire -> dhcen bel
 dhcen_bels = {}
+#: `PLL_L[0]` .. -> `(x, y, z)`; see `MacroBel`.
+macro_bels = {}
 
 # map io bel -> dlldly bel
 io_dlldly_bels = {}
@@ -1098,7 +1124,18 @@ def create_extra_funcs(tt: TileType, db: chipdb, x: int, y: int):
                     create_reuse_wire(tt, wire, "PINCFG_IN")
                     tt.add_bel_pin(bel, port, wire, PinType.INPUT)
         elif func == 'pll':
-                pll = tt.create_bel("PLL", "PLLA", z = PLL_Z)
+                # Both the bel type and the bel name follow the DEVICE, not the
+                # family: the GW5AST-138C's primitive is `PLL` and not `PLLA`
+                # (D96), and its sites carry the vendor's symbolic placement
+                # handle (`PLL_L[0]` ... `PLL_B[3]`), which `cst.cc` resolves
+                # `INS_LOC` against.  A database without either key keeps the
+                # pre-existing `PLL`/`PLLA` pair byte for byte.
+                # The bel TYPE follows the device: the GW5AST-138C's primitive
+                # is `PLL`, not `PLLA` (D96).  A database that names neither key
+                # keeps the pre-existing PLL/PLLA bel byte for byte.
+                pll = tt.create_bel("PLL", desc.get('primitive', 'PLLA'), z = PLL_Z)
+                if 'macro' in desc:
+                    macro_bels[desc['macro']] = (x, y, PLL_Z)
                 pll.flags = BEL_FLAG_GLOBAL
                 for pin, wire in desc['outputs'].items():
                     create_reuse_wire(tt, wire, "PLL_O")
@@ -1869,6 +1906,8 @@ def create_extra_data(chip: Chip, db: chipdb, chip_flags: int):
     for diff_type in db.diff_io_types:
         chip.extra_data.add_diff_io_type(diff_type)
     # create hclk wire->dhcen bel map
+    for macro, xyz in sorted(macro_bels.items()):
+        chip.extra_data.add_macro_bel(macro, *xyz)
     for pip, bel in dhcen_bels.items():
         chip.extra_data.add_dhcen_bel(pip[0], pip[1], pip[2], bel[0], bel[1], bel[2], bel[3])
     # create spine->dqce bel map

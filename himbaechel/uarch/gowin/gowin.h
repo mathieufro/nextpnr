@@ -104,7 +104,9 @@ inline bool type_is_userflash(IdString cell_type)
 inline bool is_userflash(const CellInfo *cell) { return type_is_userflash(cell->type); }
 
 // Return true if a cell is a PLL
-inline bool type_is_pll(IdString cell_type) { return cell_type.in(id_rPLL, id_PLLVR); }
+// `PLLA` (GW5A-25A) and `PLL` (GW5AST-138C, D96) are PLLs too: leaving them out
+// made every is_pll() site skip the GW5A families' PLLs silently.
+inline bool type_is_pll(IdString cell_type) { return cell_type.in(id_rPLL, id_PLLVR, id_PLLA, id_PLL); }
 inline bool is_pll(const CellInfo *cell) { return type_is_pll(cell->type); }
 
 // Return true if a cell is a ADC
@@ -214,6 +216,18 @@ NPNR_PACKED_STRUCT(struct HclkDiv2_POD {
 
 NPNR_PACKED_STRUCT(struct Extra_package_data_POD { RelSlice<Constraint_POD> cst; });
 
+// The vendor addresses some sites by a symbolic placement handle
+// (`INS_LOC "inst" PLL_L[0];`, SUG1018 sec 2.9) rather than by coordinates.
+// apicula measures the handle of every such site and writes it into the
+// database, so `cst.cc` resolves a macro by lookup instead of by a rule about
+// where on the die a site sits.
+NPNR_PACKED_STRUCT(struct Macro_bel_POD {
+    int32_t name;
+    int16_t x;
+    int16_t y;
+    int32_t z;
+});
+
 NPNR_PACKED_STRUCT(struct Extra_chip_data_POD {
     int32_t chip_flags;
     int32_t dcs_prefix;
@@ -230,6 +244,7 @@ NPNR_PACKED_STRUCT(struct Extra_chip_data_POD {
     RelSlice<SpineSelectWire_POD> spine_select_wires_bottom;
     RelSlice<Io2Hclk_POD> io_to_hclk;
     RelSlice<HclkDiv2_POD> hclk_div2;
+    RelSlice<Macro_bel_POD> macro_bels;
 
     // chip flags
     static constexpr int32_t HAS_SP32 = 1;
