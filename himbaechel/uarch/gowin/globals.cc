@@ -147,9 +147,24 @@ struct GowinGlobalRouter
         IdString src_name = ctx->getWireName(src)[1];
         bool src_is_spine = src_name.str(ctx).rfind("SPINE", 0) == 0;
         IdString dst_type = ctx->getWireType(ctx->getPipDstWire(pip));
+        // Which spines carry a DCS-managed net is a property of the die's
+        // clock plane, so it is read from the database: a die that feeds its
+        // clock plane through a bridge reaches ordinary spines of each
+        // quadrant from a DCS output, and naming the CLKOUT spines here left
+        // every such net unroutable.
         bool src_valid = ((!src_is_spine) && src_type.in(id_GLOBAL_CLK, id_IO_O, id_PLL_O, id_HCLK)) ||
-                         src_name.in(id_SPINE6, id_SPINE7, id_SPINE14, id_SPINE15, id_SPINE22, id_SPINE23, id_SPINE30,
-                                     id_SPINE31);
+                         gwu.is_dcs_spine(src_name);
+        // A DCS-managed net reaches a spine through its own DCS and no other
+        // way -- otherwise the router is free to take the clock straight to
+        // the loads on a spine of its own and leave the mux out of the network
+        // it is meant to gate.  Reaching the DCS *output* is how the net
+        // enters the mux (that pip is the DCS's own), so only a spine which is
+        // not a DCS output is restricted.
+        IdString dst_name = ctx->getWireName(ctx->getPipDstWire(pip))[1];
+        if (dst_name.str(ctx).rfind("SPINE", 0) == 0 && !gwu.is_dcs_clkout(dst_name) &&
+            !gwu.is_dcs_clkout(src_name)) {
+            return false;
+        }
         bool dst_valid = dst_type.in(id_GLOBAL_CLK, id_TILE_CLK, id_PLL_I, id_PLL_O, id_IO_I, id_HCLK);
 
         bool res = (src_valid && dst_valid) || (src_valid && is_local(dst_type)) || (is_local(src_type) && dst_valid);
@@ -466,13 +481,21 @@ struct GowinGlobalRouter
                 }
             }
         }
+        int hw_dcs_count = 0;
         for (PipId pip : ctx->getPipsDownhill(src)) {
-            if (ctx->getBoundPipNet(pip) == nullptr) {
+            // A clock source commonly feeds more than the DCS -- the same pin
+            // also clocks the logic that drives CLKSEL -- so a bound downhill
+            // pip is only this net's entry into a hardware DCS when it carries
+            // this net and lands on a DCS input.
+            if (ctx->getBoundPipNet(pip) != net) {
                 continue;
             }
             WireId dst = ctx->getPipDstWire(pip);
             BelId dcs_bel = gwu.get_dcs_bel(ctx->getWireName(dst)[1]);
-            NPNR_ASSERT(dcs_bel != BelId());
+            if (dcs_bel == BelId()) {
+                continue;
+            }
+            ++hw_dcs_count;
 
             // One pseudo DCS (either logical or custom, whatever you like)
             // can be implemented as several hardware dcs - this is because
@@ -504,6 +527,9 @@ struct GowinGlobalRouter
             dcs_ci->copyPortTo(id_SELFORCE, hw_dcs, id_SELFORCE);
             dcs_ci->copyPortBusTo(dcs_clock_input_prefix, 0, false, hw_dcs, dcs_clock_input_prefix, 0, false, 4);
             dcs_ci->copyPortBusTo(id_CLKSEL, 0, true, hw_dcs, id_CLKSEL, 0, false, 4);
+        }
+        if (hw_dcs_count == 0) {
+            log_error("The %s network was routed without passing through a DCS.\n", ctx->nameOf(net));
         }
 
         // remove the virtual DCS

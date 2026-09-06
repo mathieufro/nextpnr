@@ -51,6 +51,10 @@ struct GowinUtils
     BelId get_dhcen_bel(WireId hclkin_wire, IdString &side);
     BelId get_dlldly_bel(BelId io_bel);
     IdString get_dcs_prefix(void);
+    // Is this spine one a DCS-managed net may travel on?
+    bool is_dcs_spine(IdString wire_name) const;
+    // Is this wire a DCS output?
+    bool is_dcs_clkout(IdString wire_name) const;
 
     // Segments
     int get_segments_count(void) const;

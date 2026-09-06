@@ -359,6 +359,8 @@ class ChipExtraData(BBAStruct):
     io_to_hclk: list[Io2Hclk] = field(default_factory = list)
     hclk_div2: list[HclkDiv2] = field(default_factory = list)
     macro_bels: list[MacroBel] = field(default_factory = list)
+    dcs_spines: list[IdString] = field(default_factory = list)
+    dcs_clkouts: list[IdString] = field(default_factory = list)
 
     def set_dcs_prefix(self, prefix: str):
         self.dcs_prefix = self.strs.id(prefix)
@@ -380,6 +382,12 @@ class ChipExtraData(BBAStruct):
 
     def add_dcs_bel(self, spine: str, x: int, y: int, z: int):
         self.dcs_bels.append(SpineBel(self.strs.id(spine), x, y, z))
+
+    def add_dcs_spine(self, spine: str):
+        self.dcs_spines.append(self.strs.id(spine))
+
+    def add_dcs_clkout(self, wire: str):
+        self.dcs_clkouts.append(self.strs.id(wire))
 
     def add_io_dlldly_bel(self, io: str, dlldly: str):
         self.io_dlldly_bels.append(IoBel(self.strs.id(io), self.strs.id(dlldly)))
@@ -451,6 +459,12 @@ class ChipExtraData(BBAStruct):
         bba.label(f"{context}_macro_bels")
         for i, t in enumerate(self.macro_bels):
             t.serialise(f"{context}_macro_bel{i}", bba)
+        bba.label(f"{context}_dcs_spines")
+        for spine in self.dcs_spines:
+            bba.u32(spine.index)
+        bba.label(f"{context}_dcs_clkouts")
+        for wire in self.dcs_clkouts:
+            bba.u32(wire.index)
 
     def serialise(self, context: str, bba: BBAWriter):
         bba.u32(self.flags)
@@ -469,6 +483,8 @@ class ChipExtraData(BBAStruct):
         bba.slice(f"{context}_io_to_hclk", len(self.io_to_hclk))
         bba.slice(f"{context}_hclk_div2", len(self.hclk_div2))
         bba.slice(f"{context}_macro_bels", len(self.macro_bels))
+        bba.slice(f"{context}_dcs_spines", len(self.dcs_spines))
+        bba.slice(f"{context}_dcs_clkouts", len(self.dcs_clkouts))
 
 @dataclass
 class PackageExtraData(BBAStruct):
@@ -1882,6 +1898,39 @@ def create_packages(chip: Chip, db: chipdb):
             add_pll(chip, db, pad, io_loc)
 
 # Extra chip data
+def dcs_spines_and_clkouts(db: chipdb):
+    """`(spines a DCS output can drive, wire names of a DCS output)`.
+
+    A DCS-managed net may only roam the clock plane on a spine its own DCS
+    feeds, which is what makes the mux glitch-free for every load.  On the
+    pre-5A dies a DCS output *is* a spine, so the set is simply the four (or
+    eight) `CLKOUT` spines.  A die whose clock plane is split into halves fed
+    from a bridge reaches its spines indirectly: the DCS output joins the
+    half's `CBRIDGEOUT_<half><n>` node, and that node drives ordinary spines of
+    each quadrant through the bridge cell's multiplexer -- so the reachable set
+    is derived from the database rather than named, and the pre-5A devices come
+    out of the derivation with exactly the set they had.
+    """
+    clkouts = set()
+    for (row, col), func in db.extra_func.items():
+        for desc in func.get('dcs', {}).values():
+            clkouts.add((row, col, desc['clkout']))
+    if not clkouts:
+        return [], []
+    # the DCS output wire and every wire sharing its Himbaechel node
+    wires = set(clkouts)
+    for _type, members in db.nodes.values():
+        if clkouts & set(members):
+            wires |= set(members)
+    out_names = {wire for _row, _col, wire in wires}
+    spines = {wire for _row, _col, wire in clkouts}
+    for row, col, wire in wires:
+        for dst, srcs in db[row, col].clock_pips.items():
+            if wire in srcs and dst.startswith('SPINE'):
+                spines.add(dst)
+    return sorted(spines), sorted(out_names)
+
+
 def create_extra_data(chip: Chip, db: chipdb, chip_flags: int):
     # The coordinates of the chip center are useful when building a DSP chain
     # because there is an area around this particular point that does not
@@ -1916,6 +1965,13 @@ def create_extra_data(chip: Chip, db: chipdb, chip_flags: int):
     # create spine->dcs bel map
     for spine, bel in dcs_bels.items():
         chip.extra_data.add_dcs_bel(spine, bel[0], bel[1], bel[2])
+    # the spines a DCS-managed net may travel on, and the DCS outputs that are
+    # the only legal way onto them
+    dcs_spines, dcs_clkouts = dcs_spines_and_clkouts(db)
+    for spine in dcs_spines:
+        chip.extra_data.add_dcs_spine(spine)
+    for clkout in dcs_clkouts:
+        chip.extra_data.add_dcs_clkout(clkout)
     # create iob->dlldly bel map
     for io, dlldly in io_dlldly_bels.items():
         chip.extra_data.add_io_dlldly_bel(io, dlldly)

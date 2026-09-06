@@ -245,6 +245,14 @@ NPNR_PACKED_STRUCT(struct Extra_chip_data_POD {
     RelSlice<Io2Hclk_POD> io_to_hclk;
     RelSlice<HclkDiv2_POD> hclk_div2;
     RelSlice<Macro_bel_POD> macro_bels;
+    // The spines a DCS-managed net may travel on, derived from the database by
+    // `gowin_arch_gen.dcs_drivable_spines`: on a die whose clock plane is fed
+    // through a bridge a DCS reaches ordinary spines of each quadrant, not
+    // only the one its CLKOUT is named after.
+    RelSlice<int32_t> dcs_spines;
+    // The wire names of a DCS output: the only legal way for a DCS-managed net
+    // to reach one of those spines.
+    RelSlice<int32_t> dcs_clkouts;
 
     // chip flags
     static constexpr int32_t HAS_SP32 = 1;
