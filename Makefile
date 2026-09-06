@@ -31,6 +31,7 @@ gate:
 # bitstream; does not touch `build/`.
 _gate-fast:
 	@python3 himbaechel/uarch/gowin/tests/check_hclk_6block.py
+	@python3 himbaechel/uarch/gowin/tests/check_arch_gen_deterministic.py
 
 # branch: fast, plus evidence/criteria tools -- nextpnr owns none of those
 # (open-toolchain and the umbrella do); alias for fast (D94: "branch = fast
