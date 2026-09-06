@@ -44,6 +44,7 @@ struct GowinPacker
     void pack_dsp(void);
 
     // PLL
+    void drop_unwired_constant_inputs(CellInfo *ci);
     void pack_pll(void);
 
     // Clocks

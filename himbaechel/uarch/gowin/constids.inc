@@ -1445,3 +1445,21 @@ X(NO_GP_CLOCK_ROUTING)
 // gw5a alu
 X(CIN_NETTYPE)
 X(RAW_ALU_LUT)
+X(HCLK40)
+X(HCLK41)
+X(HCLK42)
+X(HCLK43)
+X(HCLK50)
+X(HCLK51)
+X(HCLK52)
+X(HCLK53)
+
+// gw5a DHCE: the GW5A spelling of DHCEN (primitive DHCE(CLKIN, CEN, CLKOUT);
+// DHCEN itself does not exist on the family -- GowinSynthesis EX3937)
+X(DHCE)
+X(CEN)
+
+// gw5a DCE: the GW5A spelling of DQCE (primitive DCE(CLKIN, CE, CLKOUT);
+// DQCE itself does not exist on the family -- GowinSynthesis EX3937, and
+// UG306-1.0.1E S3.1 names it DCE)
+X(DCE)

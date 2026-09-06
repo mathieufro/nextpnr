@@ -147,6 +147,49 @@ void GowinPacker::pack_inv(void)
     }
 }
 
+// A die does not have to wire every port its PLL primitive declares: the
+// GW5AST-138C's `.dat` gives no wire at all for the delay-trim inputs
+// (`DT0` .. `DT3`), which the `PLL` port list still carries and which an RTL
+// instantiation still has to tie off.  A port with no wire cannot be routed,
+// so a *constant* tie-off on one is dropped here -- routing it could not have
+// achieved anything else.  A port carrying a real signal is left connected and
+// still fails in the router, which is the correct outcome for a design that
+// asks this device for a function it does not have.
+void GowinPacker::drop_unwired_constant_inputs(CellInfo *ci)
+{
+    BelId ref_bel;
+    for (BelId bel : ctx->getBels()) {
+        if (ctx->getBelType(bel) == ci->type) {
+            ref_bel = bel;
+            break;
+        }
+    }
+    if (ref_bel == BelId()) {
+        return;
+    }
+    std::vector<IdString> unwired;
+    for (auto &port : ci->ports) {
+        if (port.second.type != PORT_IN || port.second.net == nullptr) {
+            continue;
+        }
+        if (ctx->getBelPinWire(ref_bel, port.first) != WireId()) {
+            continue;
+        }
+        IdString net = port.second.net->name;
+        if (net != ctx->id("$PACKER_GND") && net != ctx->id("$PACKER_VCC")) {
+            continue;
+        }
+        unwired.push_back(port.first);
+    }
+    for (IdString port : unwired) {
+        ci->disconnectPort(port);
+    }
+    if (!unwired.empty()) {
+        log_info("    %s: dropped %zu constant tie-off(s) on ports this device does not wire\n",
+                 ctx->nameOf(ci), unwired.size());
+    }
+}
+
 // ===================================
 // PLL
 // ===================================
@@ -159,8 +202,9 @@ void GowinPacker::pack_pll(void)
     for (auto &cell : ctx->cells) {
         auto &ci = *cell.second;
 
-        if (ci.type.in(id_rPLL, id_PLLVR, id_PLLA)) {
+        if (ci.type.in(id_rPLL, id_PLLVR, id_PLLA, id_PLL)) {
             gwu.remove_brackets(&ci);
+            drop_unwired_constant_inputs(&ci);
 
             // If CLKIN is connected to a special pin, then it makes sense
             // to try to place the PLL so that it uses a direct connection
@@ -342,6 +386,18 @@ void GowinPacker::pack_dqce(void)
     // We do this here because the decision about which physical DQCEs to
     // use is made during routing, but some of the information (let’s say
     // mapping cell pins -> bel pins) is filled in before routing.
+    // The GW5A family spells the primitive DCE, not DQCE (GowinSynthesis
+    // answers EX3937 for DQCE; UG306-1.0.1E S3.1 names it DCE).  Only the
+    // cell is renamed -- the ports are the same -- so normalise the two names
+    // here instead of carrying a second cell type through the whole flow, the
+    // same way DHCE is normalised onto DHCEN.
+    for (auto &cell : ctx->cells) {
+        auto &ci = *cell.second;
+        if (ci.type == id_DCE) {
+            ci.type = id_DQCE;
+        }
+    }
+
     bool grab_bels = false;
     for (auto &cell : ctx->cells) {
         auto &ci = *cell.second;
@@ -403,6 +459,23 @@ void GowinPacker::pack_dcs(void)
 // =========================================
 void GowinPacker::pack_dhcens(void)
 {
+    // The GW5A family spells this primitive DHCE and its enable port CEN --
+    // DHCEN does not exist there at all (GowinSynthesis answers
+    // "ERROR (EX3937) : Instantiating unknown module 'DHCEN'", and yosys' own
+    // gowin/cells_xtra_gw5a.v carries DHCE(CLKIN, CEN, CLKOUT)).  The bel, the
+    // packer below and globals.cc's route_dhcen_net are spelling-agnostic once
+    // the cell is renamed, so normalise the two names here instead of carrying
+    // a second cell type through the whole flow.
+    for (auto &cell : ctx->cells) {
+        auto &ci = *cell.second;
+        if (ci.type == id_DHCE) {
+            ci.type = id_DHCEN;
+            if (ci.ports.count(id_CEN)) {
+                ci.renamePort(id_CEN, id_CE);
+            }
+        }
+    }
+
     // Allocate all available dhcen bels; we will find out which of them
     // will actually be used during the routing process.
     bool grab_bels = false;

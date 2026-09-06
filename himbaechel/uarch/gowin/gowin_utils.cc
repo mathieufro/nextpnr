@@ -72,7 +72,7 @@ bool GowinUtils::driver_is_clksrc(const PortRef &driver)
         }
     }
     // PLL outputs
-    if (driver.cell->type.in(id_rPLL, id_PLLVR, id_PLLA)) {
+    if (driver.cell->type.in(id_rPLL, id_PLLVR, id_PLLA, id_PLL)) {
         if (driver.port.in(id_CLKOUT, id_CLKOUTD, id_CLKOUTD3, id_CLKOUTP, id_CLKOUT0, id_CLKOUT1, id_CLKOUT2,
                            id_CLKOUT3, id_CLKOUT4, id_CLKOUT5, id_CLKOUT6, id_CLKOUT7)) {
             if (ctx->debug) {
@@ -312,6 +312,28 @@ BelId GowinUtils::get_dhcen_bel(WireId hclkin_wire, IdString &side)
         }
     }
     return BelId();
+}
+
+bool GowinUtils::is_dcs_spine(IdString wire_name) const
+{
+    const Extra_chip_data_POD *extra = reinterpret_cast<const Extra_chip_data_POD *>(ctx->chip_info->extra_data.get());
+    for (auto &spine : extra->dcs_spines) {
+        if (IdString(spine) == wire_name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool GowinUtils::is_dcs_clkout(IdString wire_name) const
+{
+    const Extra_chip_data_POD *extra = reinterpret_cast<const Extra_chip_data_POD *>(ctx->chip_info->extra_data.get());
+    for (auto &wire : extra->dcs_clkouts) {
+        if (IdString(wire) == wire_name) {
+            return true;
+        }
+    }
+    return false;
 }
 
 IdString GowinUtils::get_dcs_prefix(void)

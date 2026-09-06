@@ -325,6 +325,22 @@ class HclkDiv2(BBAStruct):
         bba.u16(self.z)
 
 @dataclass
+class MacroBel(BBAStruct):
+    """One site addressable by a vendor placement macro, e.g. `PLL_L[0]`."""
+    name: IdString
+    x: int
+    y: int
+    z: int
+
+    def serialise_lists(self, context: str, bba: BBAWriter):
+        pass
+    def serialise(self, context: str, bba: BBAWriter):
+        bba.u32(self.name.index)
+        bba.u16(self.x)
+        bba.u16(self.y)
+        bba.u32(self.z)
+
+@dataclass
 class ChipExtraData(BBAStruct):
     strs: StringPool
     flags: int
@@ -342,6 +358,9 @@ class ChipExtraData(BBAStruct):
     spine_select_wires_bottom: list[SpineSelectWire] = field(default_factory = list)
     io_to_hclk: list[Io2Hclk] = field(default_factory = list)
     hclk_div2: list[HclkDiv2] = field(default_factory = list)
+    macro_bels: list[MacroBel] = field(default_factory = list)
+    dcs_spines: list[IdString] = field(default_factory = list)
+    dcs_clkouts: list[IdString] = field(default_factory = list)
 
     def set_dcs_prefix(self, prefix: str):
         self.dcs_prefix = self.strs.id(prefix)
@@ -363,6 +382,12 @@ class ChipExtraData(BBAStruct):
 
     def add_dcs_bel(self, spine: str, x: int, y: int, z: int):
         self.dcs_bels.append(SpineBel(self.strs.id(spine), x, y, z))
+
+    def add_dcs_spine(self, spine: str):
+        self.dcs_spines.append(self.strs.id(spine))
+
+    def add_dcs_clkout(self, wire: str):
+        self.dcs_clkouts.append(self.strs.id(wire))
 
     def add_io_dlldly_bel(self, io: str, dlldly: str):
         self.io_dlldly_bels.append(IoBel(self.strs.id(io), self.strs.id(dlldly)))
@@ -393,6 +418,9 @@ class ChipExtraData(BBAStruct):
 
     def add_hclkdiv2(self, hclk_idx: int, x: int, y: int, z: int):
         self.hclk_div2.append(HclkDiv2(hclk_idx, x, y, z))
+
+    def add_macro_bel(self, macro: str, x: int, y: int, z: int):
+        self.macro_bels.append(MacroBel(self.strs.id(macro), x, y, z))
 
     def serialise_lists(self, context: str, bba: BBAWriter):
         self.bottom_io.serialise_lists(f"{context}_bottom_io", bba)
@@ -428,6 +456,15 @@ class ChipExtraData(BBAStruct):
         bba.label(f"{context}_hclk_div2")
         for i, t in enumerate(self.hclk_div2):
             t.serialise(f"{context}_hclk_div2{i}", bba)
+        bba.label(f"{context}_macro_bels")
+        for i, t in enumerate(self.macro_bels):
+            t.serialise(f"{context}_macro_bel{i}", bba)
+        bba.label(f"{context}_dcs_spines")
+        for spine in self.dcs_spines:
+            bba.u32(spine.index)
+        bba.label(f"{context}_dcs_clkouts")
+        for wire in self.dcs_clkouts:
+            bba.u32(wire.index)
 
     def serialise(self, context: str, bba: BBAWriter):
         bba.u32(self.flags)
@@ -445,6 +482,9 @@ class ChipExtraData(BBAStruct):
         bba.slice(f"{context}_spine_select_wires_bottom", len(self.spine_select_wires_bottom))
         bba.slice(f"{context}_io_to_hclk", len(self.io_to_hclk))
         bba.slice(f"{context}_hclk_div2", len(self.hclk_div2))
+        bba.slice(f"{context}_macro_bels", len(self.macro_bels))
+        bba.slice(f"{context}_dcs_spines", len(self.dcs_spines))
+        bba.slice(f"{context}_dcs_clkouts", len(self.dcs_clkouts))
 
 @dataclass
 class PackageExtraData(BBAStruct):
@@ -529,9 +569,16 @@ def create_global_nodes(chip: Chip, db: chipdb):
         wire_type, node = node_hdr
         if len(node) < 2:
             continue
+        # `node` is a *set* in the apicula chipdb, so iterating it directly
+        # makes both the wire-creation order in the tile types and the order
+        # of this node's NodeWire list depend on PYTHONHASHSEED (the tuples
+        # carry a str).  That reaches the .bba -- two runs from one msgpack
+        # produced different tile-shape dedup counts and different sha256s
+        # (D101).  Sort once, here, and the whole generator is deterministic.
+        node = sorted(node)
         min_wire_name_len = 0
         if node:
-            min_wire_name_len = len(next(iter(node))[2])
+            min_wire_name_len = len(node[0][2])
         for y, x, wire in node:
             if wire_type:
                 create_reuse_wire(chip.tile_type_at(x, y), wire, wire_type)
@@ -928,6 +975,8 @@ dcs_bels = {}
 
 # map HCLKIN wire -> dhcen bel
 dhcen_bels = {}
+#: `PLL_L[0]` .. -> `(x, y, z)`; see `MacroBel`.
+macro_bels = {}
 
 # map io bel -> dlldly bel
 io_dlldly_bels = {}
@@ -1023,7 +1072,7 @@ def create_extra_funcs(tt: TileType, db: chipdb, x: int, y: int):
                 tt.extra_data.io16_x_off = x_off
                 tt.extra_data.io16_y_off = y_off
 
-            for io_type, z in {('IDES16', IDES16_Z), ('OSER16', OSER16_Z)}:
+            for io_type, z in (('IDES16', IDES16_Z), ('OSER16', OSER16_Z),):
                 bel = tt.create_bel(io_type, io_type, z = z)
                 portmap = db[y, x].bels[io_type].portmap
                 for port, wire in portmap.items():
@@ -1091,7 +1140,18 @@ def create_extra_funcs(tt: TileType, db: chipdb, x: int, y: int):
                     create_reuse_wire(tt, wire, "PINCFG_IN")
                     tt.add_bel_pin(bel, port, wire, PinType.INPUT)
         elif func == 'pll':
-                pll = tt.create_bel("PLL", "PLLA", z = PLL_Z)
+                # Both the bel type and the bel name follow the DEVICE, not the
+                # family: the GW5AST-138C's primitive is `PLL` and not `PLLA`
+                # (D96), and its sites carry the vendor's symbolic placement
+                # handle (`PLL_L[0]` ... `PLL_B[3]`), which `cst.cc` resolves
+                # `INS_LOC` against.  A database without either key keeps the
+                # pre-existing `PLL`/`PLLA` pair byte for byte.
+                # The bel TYPE follows the device: the GW5AST-138C's primitive
+                # is `PLL`, not `PLLA` (D96).  A database that names neither key
+                # keeps the pre-existing PLL/PLLA bel byte for byte.
+                pll = tt.create_bel("PLL", desc.get('primitive', 'PLLA'), z = PLL_Z)
+                if 'macro' in desc:
+                    macro_bels[desc['macro']] = (x, y, PLL_Z)
                 pll.flags = BEL_FLAG_GLOBAL
                 for pin, wire in desc['outputs'].items():
                     create_reuse_wire(tt, wire, "PLL_O")
@@ -1269,10 +1329,10 @@ def create_io_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, tdesc:
             tt.add_bel_pin(io, "BOTTOM_IO_PORT_A", portmap['BOTTOM_IO_PORT_A'], PinType.INPUT)
             tt.add_bel_pin(io, "BOTTOM_IO_PORT_B", portmap['BOTTOM_IO_PORT_B'], PinType.INPUT)
     # create IOLOGIC bels if any
-    for idx, name in {(IOLOGICA_Z, 'IOLOGICA'), (IOLOGICA_Z + 1, 'IOLOGICB')}:
+    for idx, name in ((IOLOGICA_Z, 'IOLOGICA'), (IOLOGICA_Z + 1, 'IOLOGICB'),):
         if name not in db[y, x].bels:
             continue
-        for off, io_type in {(0, 'O'), (2, 'I')}:
+        for off, io_type in ((0, 'O'), (2, 'I'),):
             iol = tt.create_bel(f"{name}{io_type}", f"IOLOGIC{io_type}", z = idx + off)
             for port, wire in db[y, x].bels[name].portmap.items():
                 if port == 'FCLK': # XXX compatibility
@@ -1417,7 +1477,9 @@ def create_ssram_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, tde
     return tt
 
 # BSRAM
-_bsram_inputs = {'CLK', 'OCE', 'CE', 'RESET', 'WRE'}
+# tuple, not a set: this order becomes the wire-creation order in the BSRAM
+# tile types and so reaches the .bba (D101).
+_bsram_inputs = ('CLK', 'OCE', 'CE', 'RESET', 'WRE')
 def create_bsram_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, tdesc: TypeDesc):
     typename = "BSRAM"
     tiletype = f"{typename}_{ttyp}"
@@ -1430,7 +1492,7 @@ def create_bsram_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, tde
     bsram = tt.create_bel("BSRAM", "BSRAM", z = BSRAM_Z)
 
 
-    for sfx in {'', 'A', 'B'}:
+    for sfx in ('', 'A', 'B',):
         for inp in _bsram_inputs:
             add_port_wire(tt, bsram, portmap, f"{inp}{sfx}", "BSRAM_I", PinType.INPUT)
         for idx in range(3):
@@ -1474,7 +1536,7 @@ def create_dsp_5a_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, td
         portmap = db[y, x].bels[belname].portmap
         dsp = tt.create_bel(belname, "MULT12X12", eval(f'MULT12X12_{idx}_Z'))
 
-        for sfx in {'A', 'B'}:
+        for sfx in ('A', 'B',):
             for inp in range(12):
                 add_port_wire(tt, dsp, portmap, f"{sfx}{inp}", "DSP_I", PinType.INPUT)
         for inp in range(2):
@@ -1489,7 +1551,7 @@ def create_dsp_5a_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, td
     portmap = db[y, x].bels[belname].portmap
     dsp = tt.create_bel(belname, "MULTALU27X18", MULTALU27X18_Z)
 
-    for sfx, qnt in {('A', 27) , ('B', 18), ('C', 48), ('D', 26)}:
+    for sfx, qnt in (('A', 27) , ('B', 18), ('C', 48), ('D', 26),):
         for inp in range(qnt):
             add_port_wire(tt, dsp, portmap, f"{sfx}{inp}", "DSP_I", PinType.INPUT)
     for inp in range(2):
@@ -1511,7 +1573,7 @@ def create_dsp_5a_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, td
     portmap = db[y, x].bels[belname].portmap
     dsp = tt.create_bel(belname, "MULTADDALU12X12", MULTADDALU12X12_Z)
 
-    for sfx in {'A', 'B'}:
+    for sfx in ('A', 'B',):
         for mult in range(2):
             for inp in range(12):
                 add_port_wire(tt, dsp, portmap, f"{sfx}{mult}{inp}", "DSP_I", PinType.INPUT)
@@ -1557,7 +1619,7 @@ def create_dsp_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, tdesc
         dsp = tt.create_bel(belname, "PADD9", eval(f'PADD9_{mac}_{idx}_Z'))
 
         add_port_wire(tt, dsp, portmap, "ADDSUB", "DSP_I", PinType.INPUT)
-        for sfx in {'A', 'B'}:
+        for sfx in ('A', 'B',):
             for inp in range(9):
                 add_port_wire(tt, dsp, portmap, f"{sfx}{inp}", "DSP_I", PinType.INPUT)
         for inp in range(9):
@@ -1576,7 +1638,7 @@ def create_dsp_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, tdesc
         dsp = tt.create_bel(belname, "PADD18", eval(f'PADD18_{mac}_{idx}_Z'))
 
         add_port_wire(tt, dsp, portmap, "ADDSUB", "DSP_I", PinType.INPUT)
-        for sfx in {'A', 'B'}:
+        for sfx in ('A', 'B',):
             for inp in range(18):
                 add_port_wire(tt, dsp, portmap, f"{sfx}{inp}", "DSP_I", PinType.INPUT)
         for inp in range(18):
@@ -1596,7 +1658,7 @@ def create_dsp_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, tdesc
         portmap = db[y, x].bels[belname].portmap
         dsp = tt.create_bel(belname, "MULT9X9", eval(f'MULT9X9_{mac}_{idx}_Z'))
 
-        for sfx in {'A', 'B'}:
+        for sfx in ('A', 'B',):
             for inp in range(9):
                 add_port_wire(tt, dsp, portmap, f"{sfx}{inp}", "DSP_I", PinType.INPUT)
         for inp in _mult_inputs:
@@ -1614,7 +1676,7 @@ def create_dsp_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, tdesc
         portmap = db[y, x].bels[belname].portmap
         dsp = tt.create_bel(belname, "MULT18X18", eval(f'MULT18X18_{mac}_{idx}_Z'))
 
-        for sfx in {'A', 'B'}:
+        for sfx in ('A', 'B',):
             for inp in range(18):
                 add_port_wire(tt, dsp, portmap, f"{sfx}{inp}", "DSP_I", PinType.INPUT)
         for inp in _mult_inputs:
@@ -1637,10 +1699,10 @@ def create_dsp_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, tdesc
     add_port_wire(tt, dsp, db[y, x].bels['MULT18X1801'].portmap, 'BSIGN', "DSP_I", PinType.INPUT, 'ZERO_BSIGN1')
     add_port_wire(tt, dsp, db[y, x].bels['MULT18X1810'].portmap, 'ASIGN', "DSP_I", PinType.INPUT, 'ZERO_ASIGN1')
     for i in range(2):
-        for sfx in {'A', 'B'}:
+        for sfx in ('A', 'B',):
             for inp in range(36):
                 add_port_wire(tt, dsp, portmap, f"{sfx}{inp}{i}", "DSP_I", PinType.INPUT)
-        for inp in {'ASIGN', 'BSIGN'}:
+        for inp in ('ASIGN', 'BSIGN',):
             add_port_wire(tt, dsp, portmap, f"{inp}{i}", "DSP_I", PinType.INPUT)
         for inp in range(4):
             add_port_wire(tt, dsp, portmap, f"CE{inp}{i}", "DSP_I", PinType.INPUT)
@@ -1655,10 +1717,10 @@ def create_dsp_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, tdesc
         portmap = db[y, x].bels[belname].portmap
         dsp = tt.create_bel(belname, "ALU54D", eval(f'ALU54D_{mac}_Z'))
 
-        for sfx in {'A', 'B'}:
+        for sfx in ('A', 'B',):
             for inp in range(54):
                 add_port_wire(tt, dsp, portmap, f"{sfx}{inp}", "DSP_I", PinType.INPUT)
-        for inp in {'ASIGN', 'BSIGN'}:
+        for inp in ('ASIGN', 'BSIGN',):
             add_port_wire(tt, dsp, portmap, inp, "DSP_I", PinType.INPUT)
         for inp in range(4):
             add_port_wire(tt, dsp, portmap, f"CE{inp}", "DSP_I", PinType.INPUT)
@@ -1677,12 +1739,12 @@ def create_dsp_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, tdesc
         dsp = tt.create_bel(belname, "MULTALU18X18", eval(f'MULTALU18X18_{mac}_Z'))
 
         for i in range(2):
-            for sfx in {'ASIGN', 'BSIGN'}:
+            for sfx in ('ASIGN', 'BSIGN',):
                 add_port_wire(tt, dsp, portmap, f"{sfx}{i}", "DSP_I", PinType.INPUT)
-            for sfx in {'A', 'B'}:
+            for sfx in ('A', 'B',):
                 for inp in range(18):
                     add_port_wire(tt, dsp, portmap, f"{sfx}{inp}{i}", "DSP_I", PinType.INPUT)
-        for sfx in {'C', 'D'}:
+        for sfx in ('C', 'D',):
             for inp in range(54):
                 add_port_wire(tt, dsp, portmap, f"{sfx}{inp}", "DSP_I", PinType.INPUT)
         add_port_wire(tt, dsp, portmap, "DSIGN", "DSP_I", PinType.INPUT)
@@ -1702,7 +1764,7 @@ def create_dsp_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, tdesc
         dsp = tt.create_bel(belname, "MULTALU36X18", eval(f'MULTALU36X18_{mac}_Z'))
 
         for i in range(2):
-            for sfx in {'ASIGN', 'BSIGN'}:
+            for sfx in ('ASIGN', 'BSIGN',):
                 add_port_wire(tt, dsp, portmap, f"{sfx}{i}", "DSP_I", PinType.INPUT)
             for inp in range(18):
                 add_port_wire(tt, dsp, portmap, f"A{inp}{i}", "DSP_I", PinType.INPUT)
@@ -1726,7 +1788,7 @@ def create_dsp_tiletype(chip: Chip, db: chipdb, x: int, y: int, ttyp: int, tdesc
         dsp = tt.create_bel(belname, "MULTADDALU18X18", eval(f'MULTADDALU18X18_{mac}_Z'))
 
         for i in range(2):
-            for sfx in {'ASIGN', 'BSIGN', 'ASEL', 'BSEL'}:
+            for sfx in ('ASIGN', 'BSIGN', 'ASEL', 'BSEL',):
                 add_port_wire(tt, dsp, portmap, f"{sfx}{i}", "DSP_I", PinType.INPUT)
             for inp in range(18):
                 add_port_wire(tt, dsp, portmap, f"A{inp}{i}", "DSP_I", PinType.INPUT)
@@ -1836,6 +1898,39 @@ def create_packages(chip: Chip, db: chipdb):
             add_pll(chip, db, pad, io_loc)
 
 # Extra chip data
+def dcs_spines_and_clkouts(db: chipdb):
+    """`(spines a DCS output can drive, wire names of a DCS output)`.
+
+    A DCS-managed net may only roam the clock plane on a spine its own DCS
+    feeds, which is what makes the mux glitch-free for every load.  On the
+    pre-5A dies a DCS output *is* a spine, so the set is simply the four (or
+    eight) `CLKOUT` spines.  A die whose clock plane is split into halves fed
+    from a bridge reaches its spines indirectly: the DCS output joins the
+    half's `CBRIDGEOUT_<half><n>` node, and that node drives ordinary spines of
+    each quadrant through the bridge cell's multiplexer -- so the reachable set
+    is derived from the database rather than named, and the pre-5A devices come
+    out of the derivation with exactly the set they had.
+    """
+    clkouts = set()
+    for (row, col), func in db.extra_func.items():
+        for desc in func.get('dcs', {}).values():
+            clkouts.add((row, col, desc['clkout']))
+    if not clkouts:
+        return [], []
+    # the DCS output wire and every wire sharing its Himbaechel node
+    wires = set(clkouts)
+    for _type, members in db.nodes.values():
+        if clkouts & set(members):
+            wires |= set(members)
+    out_names = {wire for _row, _col, wire in wires}
+    spines = {wire for _row, _col, wire in clkouts}
+    for row, col, wire in wires:
+        for dst, srcs in db[row, col].clock_pips.items():
+            if wire in srcs and dst.startswith('SPINE'):
+                spines.add(dst)
+    return sorted(spines), sorted(out_names)
+
+
 def create_extra_data(chip: Chip, db: chipdb, chip_flags: int):
     # The coordinates of the chip center are useful when building a DSP chain
     # because there is an area around this particular point that does not
@@ -1860,6 +1955,8 @@ def create_extra_data(chip: Chip, db: chipdb, chip_flags: int):
     for diff_type in db.diff_io_types:
         chip.extra_data.add_diff_io_type(diff_type)
     # create hclk wire->dhcen bel map
+    for macro, xyz in sorted(macro_bels.items()):
+        chip.extra_data.add_macro_bel(macro, *xyz)
     for pip, bel in dhcen_bels.items():
         chip.extra_data.add_dhcen_bel(pip[0], pip[1], pip[2], bel[0], bel[1], bel[2], bel[3])
     # create spine->dqce bel map
@@ -1868,6 +1965,13 @@ def create_extra_data(chip: Chip, db: chipdb, chip_flags: int):
     # create spine->dcs bel map
     for spine, bel in dcs_bels.items():
         chip.extra_data.add_dcs_bel(spine, bel[0], bel[1], bel[2])
+    # the spines a DCS-managed net may travel on, and the DCS outputs that are
+    # the only legal way onto them
+    dcs_spines, dcs_clkouts = dcs_spines_and_clkouts(db)
+    for spine in dcs_spines:
+        chip.extra_data.add_dcs_spine(spine)
+    for clkout in dcs_clkouts:
+        chip.extra_data.add_dcs_clkout(clkout)
     # create iob->dlldly bel map
     for io, dlldly in io_dlldly_bels.items():
         chip.extra_data.add_io_dlldly_bel(io, dlldly)
@@ -1902,10 +2006,10 @@ def create_extra_data(chip: Chip, db: chipdb, chip_flags: int):
     # create HCLK<->IO and HCLK<->CLKDIV2
     if hasattr(db, "io2hclk"):
         for hclk_idx, ios in db.io2hclk.items():
-            for row_col in ios:
+            for row_col in sorted(ios):
                 chip.extra_data.add_io2hclk(hclk_idx, row_col[1], row_col[0])
         for hclk_idx, div2 in db.hclk_div2.items():
-            for row_col_idx in div2:
+            for row_col_idx in sorted(div2):
                 chip.extra_data.add_hclkdiv2(hclk_idx, row_col_idx[1], row_col_idx[0], row_col_idx[2] + CLKDIV2_0_Z)
 
 def create_timing_info(chip: Chip, db: chipdb.Device):

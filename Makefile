@@ -23,14 +23,15 @@ gate:
 	  *) echo "GATE $(GATE_SCOPE): unknown GATE_SCOPE (legal: fast branch full)"; exit 1 ;; \
 	esac
 
-# The gowin himbaechel uarch has no unit-test infra yet (P0.T38 deviation:
-# "nextpnr has no test infra here; integration proof used"). Until a phase
-# adds one, the fast/branch/full scopes are a documented no-op that still
-# enforces the single-entry-point contract and the GATE_SCOPE validation --
-# the moment tests exist here they are added to `_gate-fast`, never to a
-# second target. Builds no bitstream; does not touch `build/`.
+# The gowin himbaechel uarch has no C++ unit-test infra (P0.T38 deviation:
+# "nextpnr has no test infra here; integration proof used"), so the checks
+# it does own are source-level scripts under
+# `himbaechel/uarch/gowin/tests/`. They all hang off `_gate-fast`, never a
+# second target, so there is exactly one definition of "green". Builds no
+# bitstream; does not touch `build/`.
 _gate-fast:
-	@echo "GATE fast: no unit-test infra in nextpnr yet (P0.T38 deviation) -- ok, 0 checks"
+	@python3 himbaechel/uarch/gowin/tests/check_hclk_6block.py
+	@python3 himbaechel/uarch/gowin/tests/check_arch_gen_deterministic.py
 
 # branch: fast, plus evidence/criteria tools -- nextpnr owns none of those
 # (open-toolchain and the umbrella do); alias for fast (D94: "branch = fast

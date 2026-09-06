@@ -22,6 +22,22 @@ struct GowinCstReader
 
     GowinCstReader(Context *ctx, std::istream &in) : ctx(ctx), in(in) {};
 
+    // A placement macro (`PLL_L[0]`) is resolved through the chipdb's own
+    // `macro_bels` table, which apicula fills from the measured site bijection.
+    // Nothing here knows where on a die a site sits.
+    BelId belByMacro(const std::string &macro)
+    {
+        const Extra_chip_data_POD *extra =
+                reinterpret_cast<const Extra_chip_data_POD *>(ctx->chip_info->extra_data.get());
+        IdString want = ctx->id(macro);
+        for (auto &entry : extra->macro_bels) {
+            if (IdString(entry.name) == want) {
+                return ctx->getBelByLocation(Loc(entry.x, entry.y, entry.z));
+            }
+        }
+        return BelId();
+    }
+
     const PadInfoPOD *pinLookup(const PadInfoPOD *list, const size_t len, const IdString idx)
     {
         for (size_t i = 0; i < len; i++) {
@@ -327,17 +343,37 @@ struct GowinCstReader
                     debug_cell(it->second->name, ctx->getBelName(bel));
                 } break;
                 case inslocmacro: { // INS_LOC name <MACRO>[idx]
-                    // Placement macros are resolved through a named table.  It is
-                    // APPEND-ONLY: the PLL_* rows land with the PLL work and the
-                    // DDRDLL* rows with the DLL work; an unresolved macro is an
-                    // error, never a silent IO_PORT fall-through.
-                    static const dict<std::string, IdString> macro_bel_type = {};
+                    // Placement macros are resolved through a named table of
+                    // macro FAMILIES.  It is APPEND-ONLY: the DDRDLL* rows land
+                    // with the DLL work; an unresolved macro is an error, never a
+                    // silent IO_PORT fall-through.  The individual sites are not
+                    // listed here -- `PLL_L[0]` is looked up in the chipdb's
+                    // `macro_bels` table, which apicula fills from the measured
+                    // site bijection, so this file carries no knowledge of any
+                    // one die's geometry.
+                    static const dict<std::string, IdString> macro_bel_type = {
+                            {"PLL_L", id_PLL},
+                            {"PLL_R", id_PLL},
+                            {"PLL_B", id_PLL},
+                    };
                     std::string macro = match[2].str();
                     auto mit = macro_bel_type.find(macro);
                     if (mit == macro_bel_type.end()) {
                         log_error("Unknown placement macro %s in INS_LOC for cell %s\n", macro.c_str(), net.c_str(ctx));
                     }
-                    // (resolver rows are appended here alongside their macro entry)
+                    std::string handle = macro + "[" + match[4].str() + "]";
+                    BelId bel = belByMacro(handle);
+                    if (bel == BelId()) {
+                        log_error("This device has no site %s for the placement macro in INS_LOC for cell %s\n",
+                                  handle.c_str(), net.c_str(ctx));
+                    }
+                    if (ctx->getBelType(bel) != mit->second &&
+                        !ctx->isValidBelForCellType(it->second->type, bel)) {
+                        log_error("Bel %s (type %s) cannot hold cell %s (type %s)\n", ctx->nameOfBel(bel),
+                                  ctx->getBelType(bel).c_str(ctx), net.c_str(ctx), it->second->type.c_str(ctx));
+                    }
+                    it->second->setAttr(id_BEL, ctx->getBelName(bel).str(ctx));
+                    debug_cell(it->second->name, ctx->getBelName(bel));
                 } break;
                 default: { // IO_PORT attr=value
                     std::string attr_val = match[2];
