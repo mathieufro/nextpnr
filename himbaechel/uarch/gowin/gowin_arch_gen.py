@@ -1158,7 +1158,14 @@ def create_extra_funcs(tt: TileType, db: chipdb, x: int, y: int):
                     for port, wire in portmap.items():
                         if wire.startswith('AE350_UNMAPPED_'):
                             continue
-                        create_reuse_wire(tt, wire, wire_type)
+                        # A tap that lands in the anchor tile is one of that
+                        # routing tile's own lines -- CLK, CE, LSR, A-D. Its
+                        # type is what tells the global router the line is a
+                        # clock sink, so retyping it to AE350_IN would take
+                        # TILE_CLK away from the whole tile. Only a wire the
+                        # tile does not already have gets the AE350 type.
+                        create_reuse_wire(
+                            tt, wire, "" if tt.has_wire(wire) else wire_type)
                         tt.add_bel_pin(bel, port, wire, pin_type)
         elif func == 'pincfg':
                 bel = tt.create_bel("PINCFG", "PINCFG", PINCFG_Z)
