@@ -325,6 +325,12 @@ bool GowinUtils::is_hclk_fabric_entry_sink(IdString wire_name) const
     return false;
 }
 
+bool GowinUtils::is_iologic_fclk_wire(IdString wire_name) const
+{
+    const std::string &name = wire_name.str(ctx);
+    return name.rfind("FCLK", 0) == 0;
+}
+
 bool GowinUtils::is_dcs_spine(IdString wire_name) const
 {
     const Extra_chip_data_POD *extra = reinterpret_cast<const Extra_chip_data_POD *>(ctx->chip_info->extra_data.get());

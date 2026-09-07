@@ -56,6 +56,11 @@ struct GowinUtils
     // True for an HCLK-lane input whose lane is entered from an ordinary
     // fabric wire, so a clock can only get there over fabric.
     bool is_hclk_fabric_entry_sink(IdString wire_name) const;
+    // True for an IOLOGIC fast-clock input wire (FCLK, FCLKA, FCLKB ...).
+    // Diagnostic only: it names the wire class a failed global route stopped
+    // at, so the message can say the model is missing an edge rather than
+    // that the router should try again.
+    bool is_iologic_fclk_wire(IdString wire_name) const;
     // Is this wire a DCS output?
     bool is_dcs_clkout(IdString wire_name) const;
 
