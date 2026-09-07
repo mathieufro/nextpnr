@@ -649,9 +649,29 @@ void GowinPacker::pack_iodelay(void)
         ci.movePortTo(id_VALUE, iologic, id_VALUE);
         ci.movePortTo(id_DF, iologic, id_DF);
         if (is_gw5a_delay) {
+            // `DLYSTEP[7:0]` is the tap the delay *loads* on a `VALUE` pulse,
+            // which only dynamic mode reads; a static delay takes its tap
+            // from `C_STATIC_DLY` and the bus configures nothing.  Whether
+            // the bus exists at all is a device question -- the GW5AST-138C's
+            // IOLOGIC has no wire for any of its bits -- so handing it to the
+            // router unconditionally failed every static design on that die
+            // with "No wire found for port DLYSTEP[0]".
+            bool wants_dynamic = ci.params.count(id_DYN_DLY_EN) &&
+                                 ci.params.at(id_DYN_DLY_EN).as_string() == std::string("TRUE");
+            bool has_step_wires =
+                    ctx->getBelPinWire(l_bel, ctx->idf("%s[0]", id_DLYSTEP.c_str(ctx))) != WireId();
+            if (wants_dynamic && !has_step_wires) {
+                log_error("IODELAY %s asks for a dynamically loaded delay, but the IOLOGIC at %s has no "
+                          "DLYSTEP wire on this device.\n",
+                          ctx->nameOf(&ci), ctx->nameOfBel(l_bel));
+            }
             for (int i = 0; i < 8; ++i) {
                 IdString bit = ctx->idf("%s[%d]", id_DLYSTEP.c_str(ctx), i);
-                ci.movePortTo(bit, iologic, bit);
+                if (has_step_wires) {
+                    ci.movePortTo(bit, iologic, bit);
+                } else {
+                    ci.disconnectPort(bit);
+                }
             }
         } else {
             ci.movePortTo(id_SETN, iologic, id_SETN);
