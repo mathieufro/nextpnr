@@ -1463,3 +1463,8 @@ X(CEN)
 // DQCE itself does not exist on the family -- GowinSynthesis EX3937, and
 // UG306-1.0.1E S3.1 names it DCE)
 X(DCE)
+
+// The AE350_SOC hard block of the GW5AST-138C: one site on the die, 149 ports.
+// The block's fabric ports are aliased into its anchor cell by the chipdb, so
+// the bel needs no constid but its own.
+X(AE350_SOC)

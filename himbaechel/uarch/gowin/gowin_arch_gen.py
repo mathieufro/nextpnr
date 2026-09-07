@@ -77,6 +77,7 @@ DHCEN_Z = 288 # : 298
 USERFLASH_Z = 298
 
 EMCU_Z      = 300
+AE350_Z     = 299
 
 MIPIOBUF_Z  = 301
 MIPIIBUF_Z  = 302
@@ -1141,6 +1142,24 @@ def create_extra_funcs(tt: TileType, db: chipdb, x: int, y: int):
                 for port, wire in portmap.items():
                     create_reuse_wire(tt, wire, "EMCU_OUT")
                     tt.add_bel_pin(bel, port, wire, PinType.OUTPUT)
+        elif func == 'ae350':
+                # One site on the GW5AST-138C. Every port the device data binds
+                # is a wire of the anchor cell -- either its own or an alias the
+                # chipdb node table brought in -- so the bel is built straight
+                # from the port map, exactly as the EMCU's is. Ports the device
+                # data leaves unmapped carry an `AE350_UNMAPPED_*` wire name
+                # that is in no wire table; they are skipped here so the bel
+                # never claims a pin nextpnr cannot route, and a design that
+                # drives one fails naming the port.
+                bel = tt.create_bel("AE350_SOC", "AE350_SOC", AE350_Z)
+                for portmap, wire_type, pin_type in (
+                        (desc['ins'], "AE350_IN", PinType.INPUT),
+                        (desc['outs'], "AE350_OUT", PinType.OUTPUT)):
+                    for port, wire in portmap.items():
+                        if wire.startswith('AE350_UNMAPPED_'):
+                            continue
+                        create_reuse_wire(tt, wire, wire_type)
+                        tt.add_bel_pin(bel, port, wire, pin_type)
         elif func == 'pincfg':
                 bel = tt.create_bel("PINCFG", "PINCFG", PINCFG_Z)
                 portmap = desc['ins']

@@ -65,6 +65,7 @@ struct GowinPacker
     void pack_pincfg(void);
     void pack_bandgap(void);
     void pack_userflash(bool have_emcu);
+    void pack_ae350(void);
     void pack_emcu_and_flash(void);
 
     void run(void);

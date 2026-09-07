@@ -571,6 +571,49 @@ void GowinPacker::pack_userflash(bool have_emcu)
 }
 
 // =========================================
+// Create AE350_SOC
+// =========================================
+void GowinPacker::pack_ae350(void)
+{
+    for (auto &cell : ctx->cells) {
+        auto &ci = *cell.second;
+        if (!is_ae350(&ci)) {
+            continue;
+        }
+        // The chipdb names a bus bit `NAME<i>`, the netlist `NAME[i]`.
+        gwu.remove_brackets(&ci);
+
+        // A port the device data leaves unmapped has no bel pin, and so no
+        // fabric wire to route to. The vendor's own tools accept such a port
+        // and drop it, so refusing the design would refuse every AE350 netlist
+        // written against the primitive; disconnect it instead, loudly, so the
+        // gap is in the log and in the netlist rather than routed somewhere
+        // plausible and wrong.
+        pool<IdString> bel_pins;
+        for (BelId bel : ctx->getBels()) {
+            if (ctx->getBelType(bel) != id_AE350_SOC) {
+                continue;
+            }
+            for (IdString pin : ctx->getBelPins(bel)) {
+                bel_pins.insert(pin);
+            }
+            break;
+        }
+        std::vector<IdString> unmapped;
+        for (auto &port : ci.ports) {
+            if (port.second.net != nullptr && !bel_pins.count(port.first)) {
+                unmapped.push_back(port.first);
+            }
+        }
+        for (IdString port : unmapped) {
+            log_warning("AE350_SOC port %s is not mapped by the device data; disconnecting it.\n",
+                        port.c_str(ctx));
+            ci.disconnectPort(port);
+        }
+    }
+}
+
+// =========================================
 // Create EMCU
 // =========================================
 void GowinPacker::pack_emcu_and_flash(void)
@@ -697,6 +740,9 @@ void GowinPacker::run(void)
     ctx->check();
 
     pack_buffered_nets();
+    ctx->check();
+
+    pack_ae350();
     ctx->check();
 
     pack_emcu_and_flash();
