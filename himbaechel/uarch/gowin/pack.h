@@ -95,6 +95,7 @@ struct GowinPacker
     bool is_diff_io(BelId bel);
     bool is_mipi_io(BelId bel);
     CellInfo *create_aux_iologic_cell(CellInfo &ci, IdString mode, bool io16 = false, int idx = 0);
+    int ides_out_base(IdString type, bool wide_iologic) const;
     void reconnect_ides_outs(CellInfo *ci);
     void pack_ides_iol(CellInfo &ci, std::vector<IdString> &nets_to_remove);
 

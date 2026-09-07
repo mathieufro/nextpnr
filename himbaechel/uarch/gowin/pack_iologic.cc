@@ -271,32 +271,71 @@ CellInfo *GowinPacker::create_aux_iologic_cell(CellInfo &ci, IdString mode, bool
     return aux;
 }
 
+// The bel pin an input gearbox's `Qk` occupies is `Q(base + k)`; this is the
+// `base` of one gearbox width, or -1 when the primitive keeps the port names
+// it was written with.
+//
+// The pre-5A families give the IOLOGIC ten fabric outputs and right-align
+// every word in them, so `base` is `10 - width`.  The GW5A families give it
+// sixteen and do **not** follow that rule: `IDES4` sits at the bottom of the
+// upper half rather than at the top of the block.  Every GW5A row here is
+// MEASURED on the GW5AST-138C, by tracing each word ball of a vendor
+// bitstream back to the IOLOGIC wire that drives it (`$OTC/evidence/ides`,
+// `$OTC/evidence/oddr-iddr`); `IVIDEO` is not among them, so it keeps the
+// pre-5A window until a bitstream says otherwise.
+int GowinPacker::ides_out_base(IdString type, bool wide_iologic) const
+{
+    switch (type.hash()) {
+    case ID_IDDR: /* fall-through*/
+    case ID_IDDRC:
+        return wide_iologic ? 14 : 8;
+    case ID_IDES4:
+        return wide_iologic ? 8 : 6;
+    case ID_IDES8:
+        return wide_iologic ? 8 : 2;
+    case ID_IDES10:
+        return wide_iologic ? 6 : -1;
+    case ID_IVIDEO:
+        return 3;
+    default:
+        return -1;
+    }
+}
+
 void GowinPacker::reconnect_ides_outs(CellInfo *ci)
 {
-    IdString dest_ports[] = {id_Q9, id_Q8, id_Q7, id_Q6, id_Q5, id_Q4, id_Q3, id_Q2};
+    int width = 0;
     switch (ci->type.hash()) {
     case ID_IDDR: /* fall-through*/
     case ID_IDDRC:
-        ci->renamePort(id_Q1, id_Q9);
-        ci->renamePort(id_Q0, id_Q8);
+        width = 2;
         break;
     case ID_IDES4:
-        for (int i = 0; i < 4; ++i) {
-            ci->renamePort(ctx->idf("Q%d", 3 - i), dest_ports[i]);
-        }
+        width = 4;
         break;
     case ID_IVIDEO:
-        for (int i = 0; i < 7; ++i) {
-            ci->renamePort(ctx->idf("Q%d", 6 - i), dest_ports[i]);
-        }
+        width = 7;
         break;
     case ID_IDES8:
-        for (int i = 0; i < 8; ++i) {
-            ci->renamePort(ctx->idf("Q%d", 7 - i), dest_ports[i]);
-        }
+        width = 8;
+        break;
+    case ID_IDES10:
+        width = 10;
         break;
     default:
-        break;
+        return;
+    }
+    // A GW5A IOLOGIC is the one that carries a sixteenth output; asking the
+    // bel is what keeps this from needing a family list of its own.
+    bool wide_iologic = ci->bel != BelId() && ctx->getBelPinWire(ci->bel, id_Q15) != WireId();
+    int base = ides_out_base(ci->type, wide_iologic);
+    if (base < 0) {
+        return;
+    }
+    // Highest index first: renaming upwards over an overlapping window would
+    // otherwise clobber a port that has not been moved yet.
+    for (int i = width - 1; i >= 0; --i) {
+        ci->renamePort(ctx->idf("Q%d", i), ctx->idf("Q%d", base + i));
     }
 }
 
