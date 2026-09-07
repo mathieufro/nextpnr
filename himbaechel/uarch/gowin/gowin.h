@@ -113,6 +113,10 @@ inline bool is_pll(const CellInfo *cell) { return type_is_pll(cell->type); }
 inline bool type_is_adc(IdString cell_type) { return cell_type.in(id_ADC); }
 inline bool is_adc(const CellInfo *cell) { return type_is_adc(cell->type); }
 
+// Return true if a cell is the GW5AST-138C AE350 SoC
+inline bool type_is_ae350(IdString cell_type) { return cell_type == id_AE350_SOC; }
+inline bool is_ae350(const CellInfo *cell) { return type_is_ae350(cell->type); }
+
 // Return true if a cell is a EMCU
 inline bool type_is_emcu(IdString cell_type) { return cell_type == id_EMCU; }
 inline bool is_emcu(const CellInfo *cell) { return type_is_emcu(cell->type); }
@@ -319,6 +323,7 @@ enum
     USERFLASH_Z = 298,
 
     EMCU_Z = 300,
+    AE350_Z = 299,
 
     MIPIOBUF_Z = 301,
     MIPIIBUF_Z = 302,
