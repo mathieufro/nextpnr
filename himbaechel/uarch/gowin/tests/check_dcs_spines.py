@@ -21,6 +21,14 @@ makes it safe:
       Source-level: the filter asks `GowinUtils`, and no longer carries a
       hardcoded spine-id list.
 
+  test_dcs_clock_inputs_are_reachable
+      The output side is only half a DCS.  On GW5AST-138C every DCS clock
+      input multiplexer must offer at least one source that carries a fabric
+      clock wire in its node -- otherwise the router reaches the DCS output
+      and then dead-ends one hop short of the clock source, which is exactly
+      what the die did while the clock plane knew only one logic-to-clock
+      gate.
+
 Run: python3 himbaechel/uarch/gowin/tests/check_dcs_spines.py
 """
 
@@ -69,6 +77,33 @@ def test_bridged_die_reaches_the_quadrant_spines(arch_gen):
     assert BRIDGED_EXTRA <= spines, spines
     assert {"CBRIDGEOUT_TOP6", "CBRIDGEOUT_TOP7",
             "CBRIDGEOUT_BOTTOM6", "CBRIDGEOUT_BOTTOM7"} <= set(clkouts), clkouts
+
+
+#: MEASURED (`P1.F2`, batch `p1f2-dcsin`): the two clock-bridge cells that
+#: host a DCS, and the fabric clock wires their input multiplexers reach.
+DCS_INPUT_CELLS = {(54, 93), (54, 88)}
+
+
+def test_dcs_clock_inputs_are_reachable(_arch_gen=None):
+    db = load_db("GW5AST-138C")
+    fabric_clock = {}
+    for _name, (_kind, members) in db.nodes.items():
+        reach = {m for m in members
+                 if m[2].startswith("CLK") and m[2][3:].isdigit()}
+        if reach:
+            for member in members:
+                fabric_clock.setdefault(member, set()).update(reach)
+    for row, col in sorted(DCS_INPUT_CELLS):
+        tile = db[row, col]
+        inputs = {dest: srcs for dest, srcs in tile.clock_pips.items()
+                  if dest[0] == "P" and dest[1:3].isdigit()}
+        assert inputs, f"({row}, {col}) hosts no DCS input multiplexer"
+        for dest, srcs in sorted(inputs.items()):
+            fed = set()
+            for src in srcs:
+                fed |= {m for m in fabric_clock.get((row, col, src), ())
+                        if (m[0], m[1]) != (row, col)}
+            assert fed, f"({row}, {col}) {dest} has no source with a driver"
 
 
 def test_filter_reads_the_database(_arch_gen=None):
