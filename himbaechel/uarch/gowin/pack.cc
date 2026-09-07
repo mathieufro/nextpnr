@@ -590,6 +590,7 @@ void GowinPacker::pack_ae350(void)
         // gap is in the log and in the netlist rather than routed somewhere
         // plausible and wrong.
         pool<IdString> bel_pins;
+        bool have_site = false;
         for (BelId bel : ctx->getBels()) {
             if (ctx->getBelType(bel) != id_AE350_SOC) {
                 continue;
@@ -597,7 +598,15 @@ void GowinPacker::pack_ae350(void)
             for (IdString pin : ctx->getBelPins(bel)) {
                 bel_pins.insert(pin);
             }
+            have_site = true;
             break;
+        }
+        // Without a site every port would look unmapped and be disconnected in
+        // silence, which is the one outcome worse than refusing: the design
+        // would build, and the SoC would simply not be wired to anything.
+        if (!have_site) {
+            log_error("Cell '%s' is an AE350_SOC, but this device has no AE350_SOC site.\n",
+                      ci.name.c_str(ctx));
         }
         std::vector<IdString> unmapped;
         for (auto &port : ci.ports) {
