@@ -53,6 +53,9 @@ struct GowinUtils
     IdString get_dcs_prefix(void);
     // Is this spine one a DCS-managed net may travel on?
     bool is_dcs_spine(IdString wire_name) const;
+    // True for an HCLK-lane input whose lane is entered from an ordinary
+    // fabric wire, so a clock can only get there over fabric.
+    bool is_hclk_fabric_entry_sink(IdString wire_name) const;
     // Is this wire a DCS output?
     bool is_dcs_clkout(IdString wire_name) const;
 
