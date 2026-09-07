@@ -598,13 +598,38 @@ void GowinPacker::pack_iodelay(void)
             nets_to_remove.push_back(di_net->name);
         }
 
+        // Two delay lines wear the same primitive name.  The pre-5A IODELAY
+        // steps on SETN's direction and DF's flag; the Arora V one is
+        // IODELAY(DI, SDTAP, VALUE, DLYSTEP[7:0], DF, DO) with no SETN at all
+        // (UG304-1.3.8E Table 4-47), and takes its step count from the bus.
+        // The cell's own port set is the discriminator, so a device is never
+        // named here and the two paths cannot both be taken.
+        bool is_gw5a_delay = ci.ports.count(ctx->idf("%s[0]", id_DLYSTEP.c_str(ctx))) != 0;
+
         ci.movePortTo(id_SDTAP, iologic, id_SDTAP);
-        ci.movePortTo(id_SETN, iologic, id_SETN);
         ci.movePortTo(id_VALUE, iologic, id_VALUE);
         ci.movePortTo(id_DF, iologic, id_DF);
+        if (is_gw5a_delay) {
+            for (int i = 0; i < 8; ++i) {
+                IdString bit = ctx->idf("%s[%d]", id_DLYSTEP.c_str(ctx), i);
+                ci.movePortTo(bit, iologic, bit);
+            }
+        } else {
+            ci.movePortTo(id_SETN, iologic, id_SETN);
+        }
 
         if (ci.params.count(id_C_STATIC_DLY)) {
             iologic->setParam(id_C_STATIC_DLY, ci.params.at(id_C_STATIC_DLY));
+        }
+        // Dynamic and adaptive mode are Arora V only, and the packer that
+        // reads them keys on the parameter being present at all, so they are
+        // forwarded only when the cell carries them.
+        if (is_gw5a_delay) {
+            for (IdString parm : {id_DYN_DLY_EN, id_ADAPT_EN}) {
+                if (ci.params.count(parm)) {
+                    iologic->setParam(parm, ci.params.at(parm));
+                }
+            }
         }
         iologic->setAttr(id_IODELAY, attr);
         cells_to_remove.push_back(ci.name);
