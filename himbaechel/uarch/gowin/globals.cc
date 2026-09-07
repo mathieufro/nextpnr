@@ -178,7 +178,21 @@ struct GowinGlobalRouter
         return res;
     }
 
-    bool is_relaxed_sink(const PortRef &sink) const { return false; }
+    // A sink whose HCLK lane is entered from an ordinary fabric wire cannot be
+    // reached over the clock plane at all -- MEASURED, the vendor's own
+    // bitstream for a DHCE on that lane lights LSR2 <= W212 and no CLK/GB
+    // pip ($OTC/evidence/dhcen/lane-138c.md).  Refusing the
+    // fabric hop there does not protect the network, it only makes the lane
+    // unusable, so for those sinks -- and no others -- the global filter is
+    // lifted and the route ends the way the hardware ends it.
+    bool is_relaxed_sink(const PortRef &sink) const
+    {
+        WireId dst = ctx->getBelPinWire(sink.cell->bel, sink.port);
+        if (dst == WireId()) {
+            return false;
+        }
+        return gwu.is_hclk_fabric_entry_sink(ctx->getWireName(dst)[1]);
+    }
 
     // Dedicated backwards BFS routing for global networks
     template <typename Tfilt>
@@ -638,33 +652,121 @@ struct GowinGlobalRouter
         ctx->cells.erase(dhcen_ci->name);
     }
 
+    void ripup_global_net(NetInfo *net)
+    {
+        for (auto &wire : dict<WireId, PipMap>(net->wires)) {
+            ctx->unbindWire(wire.first);
+        }
+    }
+
+    // Every sink of `net` walks back over bound routing to `src_wire`.
+    //
+    // Dedicated routing is bound one leg at a time, and a leg that binds
+    // nothing -- because the wire it would have started from is already this
+    // net's -- leaves a tree that no longer reaches the driver.  Nothing in
+    // the global router notices; what notices is the timing analyser, which
+    // walks a sink back to the source wire and never gets there.  A net that
+    // does not pass this is ripped up and left to the ordinary router, which
+    // is slower than dedicated routing and always correct.
+    bool global_route_is_connected(NetInfo *net, WireId src_wire) const
+    {
+        for (auto usr : net->users) {
+            WireId cursor = ctx->getNetinfoSinkWire(net, usr, 0);
+            pool<WireId> seen;
+            while (cursor != src_wire) {
+                if (cursor == WireId() || !net->wires.count(cursor) || !seen.insert(cursor).second) {
+                    return false;
+                }
+                PipId pip = net->wires.at(cursor).pip;
+                if (pip == PipId()) {
+                    return false;
+                }
+                cursor = ctx->getPipSrcWire(pip);
+            }
+        }
+        return true;
+    }
+
     void route_buffered_net(NetInfo *net)
     {
-        // a) route net after buf using the buf input as source
         CellInfo *buf_ci = net->driver.cell;
-        WireId src = ctx->getBelPinWire(buf_ci->bel, id_I);
-
         NetInfo *net_before_buf = buf_ci->getPort(id_I);
         NPNR_ASSERT(net_before_buf != nullptr);
+        CellInfo *true_src_ci = net_before_buf->driver.cell;
+        WireId true_src = ctx->getBelPinWire(true_src_ci->bel, net_before_buf->driver.port);
 
-        RouteResult route_result = route_direct_net(
-                net,
-                [&](PipId pip, WireId src_wire) {
-                    return global_pip_filter(pip, src_wire) && segment_wire_filter(pip) && dcs_input_filter(pip);
-                },
-                src);
-        if (route_result == NOT_ROUTED) {
-            log_error("Can't route the %s net. It might be worth removing the BUFG buffer flag.\n", ctx->nameOf(net));
+        // Both legs or neither.  Leaving the leg before the buffer unrouted
+        // while the leg after it is bound gives the net two disconnected
+        // routing trees, and every later walk of that net -- the timing
+        // analyser's route delays, router1's own consistency check -- either
+        // loops or asserts.  MEASURED: that is what four independent global
+        // clock nets did ($OTC/evidence/clocking/four-globals-138c.md).
+        auto route_through = [&](WireId buf_in) {
+            RouteResult after = route_direct_net(
+                    net,
+                    [&](PipId pip, WireId src_wire) {
+                        return global_pip_filter(pip, src_wire) && segment_wire_filter(pip) &&
+                               dcs_input_filter(pip);
+                    },
+                    buf_in);
+            if (after == NOT_ROUTED) {
+                ripup_global_net(net);
+                return false;
+            }
+            ctx->bindWire(true_src, net, STRENGTH_LOCKED);
+            bool before = backwards_bfs_route(net, true_src, buf_in, 1000000, false,
+                                              [&](PipId pip, WireId src_wire) {
+                                                  return clock_gate_wire_filter(pip) &&
+                                                         segment_wire_filter(pip) && dcs_input_filter(pip);
+                                              });
+            if (!before) {
+                ripup_global_net(net);
+                return false;
+            }
+            return true;
+        };
+
+        BelId chosen = buf_ci->bel;
+        bool routed = route_through(ctx->getBelPinWire(chosen, id_I));
+        if (!routed) {
+            // A buffer sits on one logic-to-clock gate, and a gate reaches only
+            // part of the clock plane, so which gate the placer happened to
+            // pick decides whether the net can be routed at all -- placement
+            // has no cost term for that.  Rather than fail the design, move the
+            // buffer to a gate that does reach both its source and its loads.
+            for (BelId bel : ctx->getBels()) {
+                if (bel == chosen || ctx->getBelType(bel) != id_BUFG || !ctx->checkBelAvail(bel)) {
+                    continue;
+                }
+                WireId alt = ctx->getBelPinWire(bel, id_I);
+                // A gate wire is a node shared with the central bridge, so two
+                // buffer bels can name one wire, and a wire another net has
+                // already taken is not a candidate at all.
+                if (alt == WireId() || ctx->getBoundWireNet(alt) != nullptr) {
+                    continue;
+                }
+                ctx->unbindBel(buf_ci->bel);
+                ctx->bindBel(bel, buf_ci, STRENGTH_LOCKED);
+                if (route_through(alt)) {
+                    routed = true;
+                    break;
+                }
+                ctx->unbindBel(bel);
+                ctx->bindBel(chosen, buf_ci, STRENGTH_LOCKED);
+            }
+        }
+        if (routed && !global_route_is_connected(net, true_src)) {
+            log_info("    '%s' net was routed but not connected end to end; leaving it to the router.\n",
+                     ctx->nameOf(net));
+            ripup_global_net(net);
+            routed = false;
+        }
+        if (!routed) {
+            log_warning("Routing the %s net with the ordinary router: no clock gate reaches both its source and "
+                        "its loads.\n",
+                        ctx->nameOf(net));
         }
 
-        // b) route net before buf from whatever to the buf input
-        WireId dst = src;
-        CellInfo *true_src_ci = net_before_buf->driver.cell;
-        src = ctx->getBelPinWire(true_src_ci->bel, net_before_buf->driver.port);
-        ctx->bindWire(src, net, STRENGTH_LOCKED);
-        backwards_bfs_route(net, src, dst, 1000000, false, [&](PipId pip, WireId src_wire) {
-            return clock_gate_wire_filter(pip) && segment_wire_filter(pip) && dcs_input_filter(pip);
-        });
         // remove net
         buf_ci->movePortTo(id_O, true_src_ci, net_before_buf->driver.port);
         net_before_buf->driver.cell = nullptr;

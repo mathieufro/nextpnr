@@ -361,6 +361,7 @@ class ChipExtraData(BBAStruct):
     macro_bels: list[MacroBel] = field(default_factory = list)
     dcs_spines: list[IdString] = field(default_factory = list)
     dcs_clkouts: list[IdString] = field(default_factory = list)
+    hclk_fabric_entry_sinks: list[IdString] = field(default_factory = list)
 
     def set_dcs_prefix(self, prefix: str):
         self.dcs_prefix = self.strs.id(prefix)
@@ -388,6 +389,9 @@ class ChipExtraData(BBAStruct):
 
     def add_dcs_clkout(self, wire: str):
         self.dcs_clkouts.append(self.strs.id(wire))
+
+    def add_hclk_fabric_entry_sink(self, wire: str):
+        self.hclk_fabric_entry_sinks.append(self.strs.id(wire))
 
     def add_io_dlldly_bel(self, io: str, dlldly: str):
         self.io_dlldly_bels.append(IoBel(self.strs.id(io), self.strs.id(dlldly)))
@@ -465,6 +469,9 @@ class ChipExtraData(BBAStruct):
         bba.label(f"{context}_dcs_clkouts")
         for wire in self.dcs_clkouts:
             bba.u32(wire.index)
+        bba.label(f"{context}_hclk_fabric_entry_sinks")
+        for wire in self.hclk_fabric_entry_sinks:
+            bba.u32(wire.index)
 
     def serialise(self, context: str, bba: BBAWriter):
         bba.u32(self.flags)
@@ -485,6 +492,7 @@ class ChipExtraData(BBAStruct):
         bba.slice(f"{context}_macro_bels", len(self.macro_bels))
         bba.slice(f"{context}_dcs_spines", len(self.dcs_spines))
         bba.slice(f"{context}_dcs_clkouts", len(self.dcs_clkouts))
+        bba.slice(f"{context}_hclk_fabric_entry_sinks", len(self.hclk_fabric_entry_sinks))
 
 @dataclass
 class PackageExtraData(BBAStruct):
@@ -1972,6 +1980,10 @@ def create_extra_data(chip: Chip, db: chipdb, chip_flags: int):
         chip.extra_data.add_dcs_spine(spine)
     for clkout in dcs_clkouts:
         chip.extra_data.add_dcs_clkout(clkout)
+    # the HCLK-lane inputs whose lane is entered from ordinary fabric
+    for _loc, extra in sorted(db.extra_func.items()):
+        for sink in extra.get('hclk_fabric_entry', {}).get('sinks', []):
+            chip.extra_data.add_hclk_fabric_entry_sink(sink)
     # create iob->dlldly bel map
     for io, dlldly in io_dlldly_bels.items():
         chip.extra_data.add_io_dlldly_bel(io, dlldly)

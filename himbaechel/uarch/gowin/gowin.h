@@ -253,6 +253,11 @@ NPNR_PACKED_STRUCT(struct Extra_chip_data_POD {
     // The wire names of a DCS output: the only legal way for a DCS-managed net
     // to reach one of those spines.
     RelSlice<int32_t> dcs_clkouts;
+    // The HCLK-lane inputs whose lane is entered from an ordinary fabric wire
+    // rather than from the clock plane.  A clock can only reach such a lane
+    // over fabric, so a net managed by a clock gate is allowed to do exactly
+    // that for these sinks and for no others.
+    RelSlice<int32_t> hclk_fabric_entry_sinks;
 
     // chip flags
     static constexpr int32_t HAS_SP32 = 1;

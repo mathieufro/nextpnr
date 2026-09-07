@@ -314,6 +314,17 @@ BelId GowinUtils::get_dhcen_bel(WireId hclkin_wire, IdString &side)
     return BelId();
 }
 
+bool GowinUtils::is_hclk_fabric_entry_sink(IdString wire_name) const
+{
+    const Extra_chip_data_POD *extra = reinterpret_cast<const Extra_chip_data_POD *>(ctx->chip_info->extra_data.get());
+    for (auto &sink : extra->hclk_fabric_entry_sinks) {
+        if (IdString(sink) == wire_name) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool GowinUtils::is_dcs_spine(IdString wire_name) const
 {
     const Extra_chip_data_POD *extra = reinterpret_cast<const Extra_chip_data_POD *>(ctx->chip_info->extra_data.get());
