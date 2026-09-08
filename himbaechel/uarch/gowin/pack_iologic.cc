@@ -905,6 +905,33 @@ void GowinPacker::pack_ides16(CellInfo &ci, std::vector<IdString> &nets_to_remov
     make_iob_nets(*in_iob);
 }
 
+// The GW5A families have OSER16 and IDES16 in silicon -- one vendor run per
+// primitive builds each on the GW5AST-138C with zero errors, and the vendor's
+// own PnR resource report names them (`IOLOGIC 2/285 | --OSER16 1`,
+// `IOLOGIC 1/285 | --IDES16 1`; the two are asymmetric, OSER16 taking the A+B
+// pad pair and IDES16 one IOLOGIC).  What is missing is on this side: the
+// chipdb carries no OSER16/IDES16 bel and no io16 aux offsets for these
+// devices, so `get_tile_io16_offs` returns (0,0) everywhere and the packer
+// would otherwise die with "can not be placed at <bel>" -- a message that
+// blames the ball for a gap in the database, and sends a reader hunting for a
+// better ball that does not exist.  Refuse by name instead, and say which of
+// the two facts is the reason (`D30`).
+static bool is_gw5a_family(const Context *ctx)
+{
+    return ctx->args.device.rfind("GW5A", 0) == 0;
+}
+
+// The family string the chipdb was loaded for ("GW5AST-138C"), which is the
+// name a reader can act on; `args.device` is the part number.
+static std::string chipdb_family(const Context *ctx)
+{
+    IdString key = ctx->id("packer.chipdb");
+    if (ctx->settings.count(key)) {
+        return ctx->settings.at(key).as_string();
+    }
+    return ctx->args.device;
+}
+
 void GowinPacker::pack_io16(void)
 {
     std::vector<IdString> nets_to_remove;
@@ -912,6 +939,11 @@ void GowinPacker::pack_io16(void)
 
     for (auto &cell : ctx->cells) {
         CellInfo &ci = *cell.second;
+        if (is_gw5a_family(ctx) && (ci.type == id_OSER16 || ci.type == id_IDES16)) {
+            log_error("%s is not implemented on %s: the vendor builds it on this device, but the "
+                      "chipdb carries no %s bel and no io16 aux offsets for it\n",
+                      ci.type.c_str(ctx), chipdb_family(ctx).c_str(), ci.type.c_str(ctx));
+        }
         if (ci.type == id_OSER16) {
             if (ctx->debug) {
                 log_info("pack %s of type %s.\n", ctx->nameOf(&ci), ci.type.c_str(ctx));
