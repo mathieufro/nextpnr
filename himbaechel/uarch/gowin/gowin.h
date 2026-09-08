@@ -110,7 +110,9 @@ inline bool type_is_pll(IdString cell_type) { return cell_type.in(id_rPLL, id_PL
 inline bool is_pll(const CellInfo *cell) { return type_is_pll(cell->type); }
 
 // Return true if a cell is a ADC
-inline bool type_is_adc(IdString cell_type) { return cell_type.in(id_ADC); }
+// The GW5AST-138C names its two ADCs by the corner they sit in, so the
+// family is three cell types, not one (`P3.T28b`).
+inline bool type_is_adc(IdString cell_type) { return cell_type.in(id_ADC, id_ADCLRC, id_ADCULC); }
 inline bool is_adc(const CellInfo *cell) { return type_is_adc(cell->type); }
 
 // Return true if a cell is the GW5AST-138C AE350 SoC

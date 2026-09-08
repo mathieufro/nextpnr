@@ -9,25 +9,26 @@ router can even try are checked here rather than discovered in a run:
       `gowin_utils.cc`'s `chip_flags & HAS_5A_HCLK` gate opens for this device.
       Without the flag the six-block HCLK model is not consulted at all.
 
-  test_the_hclk_to_fclk_edge_is_absent_and_the_router_says_so
-      MEASURED, `P3.T07`: the 138C database carries **no** IO-to-HCLK edge
-      (`dev.io2hclk == {}`; `chipdb.gw5_create_hclk_iol_pip` returns `False`
-      for this device), and neither does the vendor -- twelve vendor
-      bitstreams decode zero pips into any `FCLK*` wire.  So a DHCE-gated
-      clock reaching a `CLKDIV` and stopping at an IOLOGIC fast-clock pin is
-      a missing model edge, not a placement the router could have found.
-      This check asserts the two halves of that being *reported* rather than
-      silently mis-routed: `route_direct_net` counts reached and missed sinks
-      independently (the fold it replaced lost a first-sink failure whenever a
-      later sink succeeded), and `report_unreachable_sinks` names the pin.
+  test_the_hclk_to_fclk_edge_is_modelled_for_every_block
+      MEASURED: `P3.T07` found `dev.io2hclk == {}` and this check first
+      asserted that absence; `P3.T13` then measured the vendor driving
+      `OSER`/`IDES` `FCLK` from `HCLK` and built the table, and the gearbox
+      rows close at `E1` over it.  So the check now asserts the edge is
+      present on all six blocks.
+
+  test_a_partly_routed_global_network_names_the_sinks_it_missed
+      The reporting half, which stands either way: `route_direct_net` counts
+      reached and missed sinks independently (the fold it replaced lost a
+      first-sink failure whenever a later sink succeeded), and
+      `report_unreachable_sinks` names the pin.
 
   test_arch_gen_names_the_fclk_wire_class
       `GowinUtils::is_iologic_fclk_wire` is what turns a failed global route
       into a message about the database, so it must exist and be called from
       the reporting path.
 
-Adding the edge itself is not a nextpnr change: it needs
-`apycula/chipdb.py`'s `gw5_create_hclk_iol_pip`, which Phase 3 does not own.
+The edge itself is not a nextpnr change: it lives in `apycula/chipdb.py`'s
+`gw5_create_hclk_iol_pip`, which `D106` lets Phase 3 build for this device.
 """
 import os
 import re
@@ -69,7 +70,14 @@ def test_has_5a_hclk_is_set_for_138c():
     return None
 
 
-def test_the_hclk_to_fclk_edge_is_absent_and_the_router_says_so():
+def test_a_partly_routed_global_network_names_the_sinks_it_missed():
+    """The reporting half, which stands whether or not the edge exists.
+
+    `route_direct_net` counts reached and missed sinks independently -- the
+    fold it replaced lost a first-sink failure whenever a later sink
+    succeeded -- so a clock that reaches three of four IOLOGIC cells is
+    reported as a routing failure naming the fourth, not as a success.
+    """
     globals_cc = _read("globals.cc")
     assert "int reached = 0, missed = 0;" in globals_cc, \
         "route_direct_net no longer counts sinks independently"
@@ -77,13 +85,32 @@ def test_the_hclk_to_fclk_edge_is_absent_and_the_router_says_so():
         "route_direct_net's result is not derived from the two counts"
     assert "report_unreachable_sinks" in globals_cc, \
         "a partly routed global network no longer names the sinks it missed"
+    return None
+
+
+def test_the_hclk_to_fclk_edge_is_modelled_for_every_block():
+    """The edge exists, on all six HCLK blocks.
+
+    This check was written when it did not: `P3.T07` measured `io2hclk == {}`
+    and the router message existed to say so rather than let a clock stop at
+    an IOLOGIC fast-clock pin unremarked. `P3.T13` then measured the vendor
+    driving `OSER`/`IDES` `FCLK` from `HCLK` (`FCLKSEL1`/`2` = `HCLK2`) and
+    built the table, and the gearbox rows close at `E1` over it. What this
+    check asserts is therefore the opposite of what it first asserted, and
+    saying so here is the point: a guard that keeps asserting an absence after
+    the absence is filled is a guard that has stopped measuring anything.
+    """
     db = _chipdb()
     if db is None:
         return "skipped (no chipdb reachable from this checkout)"
-    assert db.io2hclk == {}, (
-        "io2hclk is no longer empty for this device -- if the HCLK -> FCLK "
-        "edge has landed, this check and the router message must be revisited")
-    return None
+    assert db.io2hclk, (
+        f"{DEVICE} carries no IO-to-HCLK edge: an IOLOGIC fast clock has no "
+        "source and the gearbox rows cannot close")
+    assert len(db.io2hclk) == 6, (
+        f"expected one entry per HCLK block, got {sorted(db.io2hclk)}")
+    for block, cells in sorted(db.io2hclk.items()):
+        assert cells, f"HCLK block {block} reaches no IO cell"
+    return f"6 blocks, {sum(len(v) for v in db.io2hclk.values())} IO cells"
 
 
 def test_arch_gen_names_the_fclk_wire_class():

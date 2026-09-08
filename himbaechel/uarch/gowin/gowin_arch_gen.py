@@ -1194,7 +1194,12 @@ def create_extra_funcs(tt: TileType, db: chipdb, x: int, y: int):
                     create_reuse_wire(tt, wire, "PLL_I")
                     tt.add_bel_pin(pll, pin, wire, PinType.INPUT)
         elif func == 'adc':
-                pll = tt.create_bel("ADC", "ADC", z = ADC_Z)
+                # The GW5AST-138C has two ADCs and neither is called "ADC":
+                # the chipdb records which primitive each site is, so the bel
+                # carries that name and a design instantiating ADCLRC/ADCULC
+                # binds to its own site rather than to a generic one.
+                adc_type = desc.get('primitive', 'ADC')
+                pll = tt.create_bel(adc_type, adc_type, z = ADC_Z)
                 for pin, wire in desc['outputs'].items():
                     create_reuse_wire(tt, wire, "ADC_O")
                     tt.add_bel_pin(pll, pin, wire, PinType.OUTPUT)

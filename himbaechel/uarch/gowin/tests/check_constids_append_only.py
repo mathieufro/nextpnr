@@ -10,7 +10,9 @@ identifiers went at the bottom.
 
   test_constids_appended_only
       The file the IODELAY work started from is pinned by the sha256 of its
-      first `PRE_EDIT_LINES` lines; those lines must still hash to it.
+      first `PRE_EDIT_LINES` lines; those lines must still hash to it, and the
+      first names after them must still be the IODELAY three. Later work
+      appends after those, which is what append-only means.
 
   test_constids_has_dlystep
       `X(DLYSTEP)` is declared exactly once -- a duplicate `X()` compiles but
@@ -42,13 +44,23 @@ def _names():
 
 
 def test_constids_appended_only():
+    """The pinned prefix is unchanged and the first append follows it.
+
+    Anchoring on the *last* names instead would make every later append look
+    like a reordering: the ADC identifiers were appended after these, and the
+    file is expected to keep growing. What must not move is the prefix, and
+    where the first append starts.
+    """
     lines = _text().splitlines(keepends=True)
     assert len(lines) > PRE_EDIT_LINES
     prefix = b"".join(lines[:PRE_EDIT_LINES])
-    assert hashlib.sha256(prefix).hexdigest() == PRE_EDIT_SHA256
+    assert hashlib.sha256(prefix).hexdigest() == PRE_EDIT_SHA256, \
+        "the pinned prefix changed: every chipdb built before this renumbers"
+    pinned = len(re.findall(rb"^X\(\w+\)", prefix, re.MULTILINE))
     names = [n.decode() for n in _names()]
-    assert names[-len(APPENDED):] == APPENDED
-    return None
+    assert names[pinned:pinned + len(APPENDED)] == APPENDED, \
+        f"the first appended identifiers are {names[pinned:pinned + len(APPENDED)]}"
+    return f"{pinned} pinned, {len(names) - pinned} appended"
 
 
 def test_constids_has_dlystep():

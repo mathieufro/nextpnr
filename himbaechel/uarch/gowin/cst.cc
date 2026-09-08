@@ -1,6 +1,8 @@
 #include <boost/algorithm/string.hpp>
+#include <algorithm>
 #include <regex>
 #include <utility>
+#include <vector>
 
 #include "log.h"
 #include "nextpnr.h"
@@ -12,6 +14,7 @@
 
 #include "cst.h"
 #include "gowin.h"
+#include "gowin_utils.h"
 
 NEXTPNR_NAMESPACE_BEGIN
 
@@ -19,8 +22,9 @@ struct GowinCstReader
 {
     Context *ctx;
     std::istream &in;
+    GowinUtils gwu;
 
-    GowinCstReader(Context *ctx, std::istream &in) : ctx(ctx), in(in) {};
+    GowinCstReader(Context *ctx, std::istream &in) : ctx(ctx), in(in) { gwu.init(ctx); };
 
     // A placement macro (`PLL_L[0]`) is resolved through the chipdb's own
     // `macro_bels` table, which apicula fills from the measured site bijection.
@@ -67,25 +71,56 @@ struct GowinCstReader
         return Loc(col - 1, row - 1, z);
     }
 
+    // INS_LOC "<cell>" {TOP,RIGHT,BOTTOM,LEFT}SIDE[<n>] pins one CLKDIV to one
+    // lane of one HCLK block of that side.  The index is a block ordinal and a
+    // lane packed together, `n = block * lanes_per_block + lane`
+    // (SUG1018-1.7E Table 2-2): a side may carry more than one HCLK block --
+    // the GW5A(S)(T)-138 has two on each of left, right and bottom -- and the
+    // blocks of a side are numbered along it, so ordering the candidate bels by
+    // their coordinate along the side is what turns the ordinal into a bel.
+    //
+    // The Arora V HCLK block has four lanes and one CLKDIV per lane, at
+    // consecutive z; the earlier families have two sections at every other z,
+    // one block per side, and reduce to the previous behaviour of this
+    // function.
     BelId getConstrainedHCLKBel(std::smatch match, int maxX, int maxY)
     {
         int idx = std::stoi(match[3]);
-        int bel_z = BelZ::CLKDIV_0_Z + 2 * idx;
+        bool hclk_5A = gwu.has_5A_HCLK();
+        int lanes_per_block = hclk_5A ? 4 : 2;
+        int block_ordinal = idx / lanes_per_block;
+        int lane = idx % lanes_per_block;
+        int bel_z = BelZ::CLKDIV_0_Z + (hclk_5A ? lane : 2 * lane);
 
         std::string side = match[2].str();
         bool lr = (side == "LEFT") || (side == "RIGHT");
         int y_coord = (side == "BOTTOM") ? maxY - 1 : 0;
         int x_coord = (side == "RIGHT") ? maxX - 1 : 0;
 
+        // (position along the side, bel), one entry per HCLK block of the side
+        // that carries this lane.
+        std::vector<std::pair<int, BelId>> blocks;
         for (auto &bel : ctx->getBelsInBucket(ctx->getBelBucketForCellType(id_CLKDIV))) {
             auto this_loc = ctx->getBelLocation(bel);
-            if (lr && this_loc.x == x_coord && this_loc.z == bel_z && this_loc.y != 0 &&
-                this_loc.y != maxY - 1) // left or right side
-                return bel;
-            else if (!lr && this_loc.y == y_coord && this_loc.z == bel_z) // top or bottom side
-                return bel;
+            if (this_loc.z != bel_z) {
+                continue;
+            }
+            if (lr) { // left or right side, corners excluded
+                if (this_loc.x == x_coord && this_loc.y != 0 && this_loc.y != maxY - 1) {
+                    blocks.emplace_back(this_loc.y, bel);
+                }
+            } else { // top or bottom side
+                if (this_loc.y == y_coord) {
+                    blocks.emplace_back(this_loc.x, bel);
+                }
+            }
         }
-        return BelId();
+        if (block_ordinal >= int(blocks.size())) {
+            return BelId();
+        }
+        std::sort(blocks.begin(), blocks.end(),
+                  [](const std::pair<int, BelId> &a, const std::pair<int, BelId> &b) { return a.first < b.first; });
+        return blocks.at(block_ordinal).second;
     }
 
     // INS_LOC "<cell>" R<row>C<col>[<cls>][A|B] names a CLS half-slot in the tile
@@ -145,7 +180,7 @@ struct GowinCstReader
             std::regex inslocre =
                     std::regex("INS_LOC +\"([^\"]+)\" +R([0-9]+)C([0-9]+)\\[([0-9])\\]\\[([AB])\\] *;.*[\\s\\S]*");
             std::regex hclkre =
-                    std::regex("INS_LOC +\"([^\"]+)\" +(TOP|RIGHT|BOTTOM|LEFT)SIDE\\[([0,1])\\] *;*[\\s\\S]*");
+                    std::regex("INS_LOC +\"([^\"]+)\" +(TOP|RIGHT|BOTTOM|LEFT)SIDE\\[([0-7])\\] *;*[\\s\\S]*");
             std::regex clockre = std::regex("CLOCK_LOC +\"([^\"]+)\" +BUF([GS])(\\[([0-7])\\])?[^;]*;.*[\\s\\S]*");
             std::regex adcre = std::regex("USE_ADC_SRC +bus([0-9]) +IO([TRBL])([0-9]+) *;.*[\\s\\S]*");
             // Third INS_LOC spelling shipped by the vendor: a placement-macro name,

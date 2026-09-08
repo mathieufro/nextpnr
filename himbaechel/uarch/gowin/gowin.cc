@@ -928,6 +928,28 @@ void GowinImpl::postPlace()
 
 void GowinImpl::preRoute() { gowin_route_globals(ctx); }
 
+namespace {
+// The pip that drives one sink of a routed net, or a named refusal.
+//
+// `NetInfo::wires` holds an entry per wire the router actually claimed, so a
+// sink whose arc was left unrouted is simply absent from it.  Reading it with
+// `at()` turns that into an uncaught `std::out_of_range` from deep inside the
+// router's own error path -- the design's real failure ("no route to FCLK")
+// is printed as a warning and then lost behind a `dict::at()` abort.  Every
+// caller here wants the same thing, so the lookup and the refusal live in one
+// place.
+PipId sink_driving_pip(const Context *ctx, const NetInfo *net, const PortRef &user, const char *what)
+{
+    WireId sink = ctx->getNetinfoSinkWire(net, user, 0);
+    auto entry = net->wires.find(sink);
+    if (entry == net->wires.end()) {
+        log_error("Net %s has no route to the %s of %s (sink wire %s): the router left this arc unrouted.\n",
+                  ctx->nameOf(net), what, ctx->nameOf(user.cell), ctx->nameOfWire(sink));
+    }
+    return entry->second.pip;
+}
+} // namespace
+
 void GowinImpl::postRoute()
 {
     std::set<IdString> visited_hclk_users;
@@ -946,7 +968,7 @@ void GowinImpl::postRoute()
                         }
                         user.cell->setAttr(id_IOLOGIC_FCLK, Property("UNKNOWN"));
                         visited_hclk_users.insert(user.cell->name);
-                        PipId up_pip = h_net->wires.at(ctx->getNetinfoSinkWire(h_net, user, 0)).pip;
+                        PipId up_pip = sink_driving_pip(ctx, h_net, user, "FCLK");
                         IdString up_wire_name = ctx->getWireName(ctx->getPipSrcWire(up_pip))[1];
                         if (!gwu.has_5A_HCLK()) {
                             if (up_wire_name.in(id_HCLK_OUT0, id_HCLK_OUT1, id_HCLK_OUT2, id_HCLK_OUT3)) {
@@ -999,7 +1021,7 @@ void GowinImpl::postRoute()
                     continue;
                 }
                 PortRef pr = {ci, id_CLKIN};
-                PipId up_pip = h_net->wires.at(ctx->getNetinfoSinkWire(h_net, pr, 0)).pip;
+                PipId up_pip = sink_driving_pip(ctx, h_net, pr, "CLKIN");
                 IdString up_wire_name = ctx->getWireName(ctx->getPipSrcWire(up_pip))[1];
                 if (up_wire_name.in(id_HCLK_OUT0, id_HCLK_OUT1)) {
                     ci->setParam(id_INSEL, Property("CLKIN3"));
@@ -1014,7 +1036,7 @@ void GowinImpl::postRoute()
                     continue;
                 }
                 pr.port = id_CLKFB;
-                up_pip = h_net->wires.at(ctx->getNetinfoSinkWire(h_net, pr, 0)).pip;
+                up_pip = sink_driving_pip(ctx, h_net, pr, "CLKFB");
                 up_wire_name = ctx->getWireName(ctx->getPipSrcWire(up_pip))[1];
                 if (up_wire_name.in(id_HCLK_OUT0, id_HCLK_OUT1)) {
                     ci->setParam(id_FBSEL, Property("CLKFB1"));
