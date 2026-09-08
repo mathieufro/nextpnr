@@ -645,8 +645,24 @@ void GowinPacker::pack_iodelay(void)
         // named here and the two paths cannot both be taken.
         bool is_gw5a_delay = ci.ports.count(ctx->idf("%s[0]", id_DLYSTEP.c_str(ctx))) != 0;
 
-        ci.movePortTo(id_SDTAP, iologic, id_SDTAP);
-        ci.movePortTo(id_VALUE, iologic, id_VALUE);
+        // `SDTAP` and `VALUE` are the dynamic load handshake -- `VALUE`
+        // pulses the tap on `DLYSTEP` into the line and `SDTAP` selects it --
+        // so a static delay reads neither.  MEASURED (`P3.T16a`, one vendor
+        // bitstream of an IODELAY at C_STATIC_DLY=128 whose delayed net ends
+        // in the pad's own IDDR): the vendor leaves both tied to the rail and
+        // routes nothing to them, exactly as it does the DLYSTEP bus below.
+        // Routing them anyway is what the open flow's last three scoped
+        // `conns` differences were.
+        bool gw5a_static_delay =
+                is_gw5a_delay && !(ci.params.count(id_DYN_DLY_EN) &&
+                                   ci.params.at(id_DYN_DLY_EN).as_string() == std::string("TRUE"));
+        if (gw5a_static_delay) {
+            ci.disconnectPort(id_SDTAP);
+            ci.disconnectPort(id_VALUE);
+        } else {
+            ci.movePortTo(id_SDTAP, iologic, id_SDTAP);
+            ci.movePortTo(id_VALUE, iologic, id_VALUE);
+        }
         ci.movePortTo(id_DF, iologic, id_DF);
         if (is_gw5a_delay) {
             // `DLYSTEP[7:0]` is the tap the delay *loads* on a `VALUE` pulse,
@@ -905,6 +921,93 @@ void GowinPacker::pack_ides16(CellInfo &ci, std::vector<IdString> &nets_to_remov
     make_iob_nets(*in_iob);
 }
 
+// ===================================
+// IDES16 / OSER16 -- the Arora V geometry
+// ===================================
+// MEASURED (`P3.T16a`, the two vendor bitstreams `P3.T16` bought): an Arora V
+// 16-bit gearbox does NOT spread over two consecutive cells the way the
+// GW1N/GW1NS one does.  A GW5A IOLOGIC already carries sixteen `D` and
+// sixteen `Q` fabric wires, so the whole gearbox fits in ONE pad pair:
+// `OSER16` configures the pair's `A` half (`OUTMODE=ODDRX8`, `HWL`) and its
+// `B` half (`OUTMODE=DDRENABLE`, `ISI`, `OCLKCE`), and `IDES16` configures the
+// `A` half alone (`INMODE` = the die's 16:1 code) and leaves `B` clear -- which
+// is exactly the asymmetry the vendor's resource report showed, `IOLOGIC
+// 2/285` against `IOLOGIC 1/285`.  There is therefore no aux *cell* and no
+// `io16` offset to add: `get_tile_io16_offs` stays (0, 0) on this family and
+// means it.
+void GowinPacker::pack_io16_gw5(CellInfo &ci, std::vector<IdString> &nets_to_remove)
+{
+    bool is_out = ci.type == id_OSER16;
+    IdString pad_port = is_out ? id_Q : id_D;
+
+    CellInfo *iob = is_out ? net_only_drives(ctx, ci.ports.at(pad_port).net, is_iob, id_I, true)
+                           : net_driven_by(ctx, ci.ports.at(pad_port).net, is_iob, id_O);
+    NPNR_ASSERT(iob != nullptr && iob->bel != BelId());
+    iob->setParam(id_IOLOGIC_IOB, 1);
+
+    Loc iob_loc = ctx->getBelLocation(iob->bel);
+    if (iob_loc.z != BelZ::IOBA_Z) {
+        log_error("Can't place %s at %s because OSER16/IDES16 must be placed at A pin\n", ctx->nameOf(&ci),
+                  ctx->nameOfBel(iob->bel));
+    }
+    // `OSER16` needs both halves of the pair, `IDES16` only the A half.
+    int halves = is_out ? 2 : 1;
+    for (int i = 0; i < halves; ++i) {
+        BelId half = ctx->getBelByLocation(Loc(iob_loc.x, iob_loc.y, BelZ::IOLOGICA_Z + i));
+        if (half == BelId() || !ctx->checkBelAvail(half)) {
+            log_error("Can't place %s at %s because %s half is not free\n", ctx->nameOf(&ci),
+                      ctx->nameOfBel(iob->bel), i ? "the B" : "the A");
+        }
+    }
+
+    ctx->bindBel(ctx->getBelByLocation(Loc(iob_loc.x, iob_loc.y, is_out ? BelZ::OSER16_Z : BelZ::IDES16_Z)), &ci,
+                 PlaceStrength::STRENGTH_LOCKED);
+
+    // the pad connection is internal to the block
+    nets_to_remove.push_back(ci.getPort(pad_port)->name);
+    iob->disconnectPort(is_out ? id_I : id_O);
+    ci.disconnectPort(pad_port);
+
+    // The A half carries the mode; it is an ordinary IOLOGIC cell so the
+    // packer reaches it through the gearbox fuse path already measured.
+    IdString main_name = gwu.create_aux_name(ci.name);
+    ctx->createCell(main_name, id_IOLOGIC);
+    CellInfo *main = ctx->cells.at(main_name).get();
+    main->setAttr(ctx->id("MAIN_CELL"), Property(main_name.str(ctx)));
+    main->setParam(ctx->id(is_out ? "OUTMODE" : "INMODE"), Property(is_out ? "ODDRX8" : "IDDRX16"));
+    if (is_out) {
+        // The vendor sets HWL on the A half of every OSER16 measured; it is
+        // this die's spelling of the pre-5A UPDATE=SAME.
+        main->setParam(ctx->id("HWL"), Property("TRUE"));
+    }
+    ci.copyPortTo(id_PCLK, main, id_PCLK);
+    ci.copyPortTo(id_RESET, main, id_RESET);
+    ci.copyPortTo(id_FCLK, main, id_FCLK);
+    if (!is_out) {
+        ci.copyPortTo(id_CALIB, main, id_CALIB);
+    }
+    ctx->bindBel(ctx->getBelByLocation(Loc(iob_loc.x, iob_loc.y, BelZ::IOLOGICA_Z)), main,
+                 PlaceStrength::STRENGTH_LOCKED);
+
+    if (is_out) {
+        IdString aux_name = gwu.create_aux_name(ci.name, 1);
+        ctx->createCell(aux_name, id_IOLOGIC_DUMMY);
+        CellInfo *aux = ctx->cells.at(aux_name).get();
+        aux->setAttr(ctx->id("MAIN_CELL"), Property(main_name.str(ctx)));
+        aux->setAttr(ctx->id("IOLOGIC_TYPE"), Property("DUMMY"));
+        aux->setParam(ctx->id("OUTMODE"), Property("DDRENABLE16"));
+        ci.copyPortTo(id_PCLK, aux, id_PCLK);
+        ci.copyPortTo(id_RESET, aux, id_RESET);
+        ci.copyPortTo(id_FCLK, aux, id_FCLK);
+        ctx->bindBel(ctx->getBelByLocation(Loc(iob_loc.x, iob_loc.y, BelZ::IOLOGICA_Z + 1)), aux,
+                     PlaceStrength::STRENGTH_LOCKED);
+        if (iob_loc.y == ctx->getGridDimY() - 1) {
+            config_bottom_row(*iob, iob_loc, Bottom_io_POD::DDR);
+        }
+    }
+    make_iob_nets(*iob);
+}
+
 // The GW5A families have OSER16 and IDES16 in silicon -- one vendor run per
 // primitive builds each on the GW5AST-138C with zero errors, and the vendor's
 // own PnR resource report names them (`IOLOGIC 2/285 | --OSER16 1`,
@@ -921,17 +1024,6 @@ static bool is_gw5a_family(const Context *ctx)
     return ctx->args.device.rfind("GW5A", 0) == 0;
 }
 
-// The family string the chipdb was loaded for ("GW5AST-138C"), which is the
-// name a reader can act on; `args.device` is the part number.
-static std::string chipdb_family(const Context *ctx)
-{
-    IdString key = ctx->id("packer.chipdb");
-    if (ctx->settings.count(key)) {
-        return ctx->settings.at(key).as_string();
-    }
-    return ctx->args.device;
-}
-
 void GowinPacker::pack_io16(void)
 {
     std::vector<IdString> nets_to_remove;
@@ -940,9 +1032,11 @@ void GowinPacker::pack_io16(void)
     for (auto &cell : ctx->cells) {
         CellInfo &ci = *cell.second;
         if (is_gw5a_family(ctx) && (ci.type == id_OSER16 || ci.type == id_IDES16)) {
-            log_error("%s is not implemented on %s: the vendor builds it on this device, but the "
-                      "chipdb carries no %s bel and no io16 aux offsets for it\n",
-                      ci.type.c_str(ctx), chipdb_family(ctx).c_str(), ci.type.c_str(ctx));
+            if (ctx->debug) {
+                log_info("pack %s of type %s.\n", ctx->nameOf(&ci), ci.type.c_str(ctx));
+            }
+            pack_io16_gw5(ci, nets_to_remove);
+            continue;
         }
         if (ci.type == id_OSER16) {
             if (ctx->debug) {

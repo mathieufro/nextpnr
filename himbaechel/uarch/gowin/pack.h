@@ -30,6 +30,7 @@ struct GowinPacker
 
     // 16 SERDES
     void pack_io16(void);
+    void pack_io16_gw5(CellInfo &ci, std::vector<IdString> &nets_to_remove);
 
     // LUTs
     void pack_wideluts(void);
