@@ -2068,6 +2068,29 @@ def create_timing_info(chip: Chip, db: chipdb.Device):
             cell.add_clock_out(clock, f"{bus}{i}", ClockEdge.RISING, group_to_timingvalue(arc[group]))
 
 
+    def io_group_not_modelled(speed, group):
+        """Install no IO/IOLOGIC cell arc, and say so if the data ever appears.
+
+        Apicula publishes no `io` (`.tm` offset 0x3278) and no `iregoreg`
+        (0x306c) group for the GW5A family, by measurement rather than by
+        omission: both blocks are byte-identical to GW2A-18/-55/GW2AR-18, and
+        the vendor's own GW5AST-138C SDF contradicts them (`OBUF I->O` is
+        2.528/2.737 ns against a whole-block maximum of 0.819 ns; no
+        clock-to-out candidate lands within the +/-10% L0 band of `ODDR`/`IDDR
+        CLK->Q`). See `apicula/doc/timing-io-iologic.md` (P3.T32).
+
+        Modelling those numbers as this die's IO buffers and IO registers
+        would invent a timing model the silicon vendor does not have, so
+        nothing is emitted. The branch exists so that a database which starts
+        carrying the group -- a future apicula, or Phase 6 reading the .tm's
+        device-specific chunks -- is reported instead of silently ignored by
+        the fall-through.
+        """
+        print(f"warning: chipdb speed grade {speed!r} carries a {group!r} timing "
+              "group, which nextpnr does not model: no IO/IOLOGIC cell arc is "
+              "installed. Review apicula/doc/timing-io-iologic.md before "
+              "trusting IO timing.", file=sys.stderr)
+
     speed_grades = []
     for speed in db.timing.keys():
         speed_grades.append(speed)
@@ -2207,6 +2230,10 @@ def create_timing_info(chip: Chip, db: chipdb.Device):
             elif group == "iodelay":
                 for name in ['GI_DO', 'SDTAP_DO', 'SETN_DO', 'VALUE_DO', 'SDTAP_DF', 'SETN_DF', 'VALUE_DF']:
                     tmg.set_pip_class(speed, name, group_to_timingvalue(arc[name]))
+            elif group == "io":
+                io_group_not_modelled(speed, group)
+            elif group == "iregoreg":
+                io_group_not_modelled(speed, group)
             elif group == "wire":
                 # wires with delay and fanout delay
                 for name in ["X0", "X2", "X8"]:
