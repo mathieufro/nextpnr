@@ -298,7 +298,8 @@ struct GowinGlobalRouter
 
     template <typename Tfilter>
     RouteResult route_direct_net(NetInfo *net, Tfilter pip_filter, WireId aux_src = WireId(),
-                                 std::vector<PipId> *path = nullptr)
+                                 std::vector<PipId> *path = nullptr,
+                                 std::vector<PortRef> *unrouted = nullptr)
     {
         WireId src;
         src = aux_src == WireId() ? ctx->getNetinfoSourceWire(net) : aux_src;
@@ -311,7 +312,12 @@ struct GowinGlobalRouter
             ctx->bindWire(src, net, STRENGTH_LOCKED);
         }
 
-        RouteResult routed = NOT_ROUTED;
+        // Counted rather than folded into one accumulator: the fold this
+        // replaced read the previous value to decide the next, so a net whose
+        // *first* sink failed and whose second succeeded reported ROUTED_ALL
+        // and the failure was lost (MEASURED on a DHCE-gated HCLK reaching a
+        // CLKDIV and an IOLOGIC FCLK, where the two orders disagreed).
+        int reached = 0, missed = 0;
         for (auto usr : net->users) {
             WireId dst = ctx->getNetinfoSinkWire(net, usr, 0);
             if (dst == WireId()) {
@@ -323,11 +329,15 @@ struct GowinGlobalRouter
                     net, src, dst, 1000000, false,
                     [&](PipId pip, WireId src_wire) { return (is_relaxed_sink(usr) || pip_filter(pip, src)); }, path);
             if (bfs_res) {
-                routed = routed == ROUTED_PARTIALLY ? routed : ROUTED_ALL;
+                ++reached;
             } else {
-                routed = routed == NOT_ROUTED ? routed : ROUTED_PARTIALLY;
+                ++missed;
+                if (unrouted != nullptr) {
+                    unrouted->push_back(usr);
+                }
             }
         }
+        RouteResult routed = reached == 0 ? NOT_ROUTED : (missed == 0 ? ROUTED_ALL : ROUTED_PARTIALLY);
         if (routed == NOT_ROUTED) {
             if (aux_src == WireId()) {
                 ctx->unbindWire(src);
@@ -557,6 +567,26 @@ struct GowinGlobalRouter
         ctx->cells.erase(dcs_ci->name);
     }
 
+    // Print one line per sink a global network could not reach, with the bel,
+    // the port and the wire the search stopped short of.  On a device whose
+    // IO-to-HCLK table is empty an IOLOGIC fast-clock pin can never be
+    // reached, and that is a missing model edge rather than a placement the
+    // router could have found -- so the line says so.
+    void report_unreachable_sinks(NetInfo *net, const std::vector<PortRef> &unrouted) const
+    {
+        for (const PortRef &usr : unrouted) {
+            WireId dst = ctx->getBelPinWire(usr.cell->bel, usr.port);
+            log_info("net '%s': no dedicated path to %s.%s (bel %s, wire %s)\n", ctx->nameOf(net),
+                     ctx->nameOf(usr.cell), usr.port.c_str(ctx), ctx->nameOfBel(usr.cell->bel),
+                     dst == WireId() ? "<none>" : ctx->nameOfWire(dst));
+            if (dst != WireId() && gwu.is_iologic_fclk_wire(ctx->getWireName(dst)[1])) {
+                log_info("  %s is an IOLOGIC fast-clock pin; this device's database carries no HCLK entry for it, so "
+                         "no clock network reaches it\n",
+                         ctx->nameOfWire(dst));
+            }
+        }
+    }
+
     void route_dhcen_net(NetInfo *net)
     {
         // route net after dhcen source of CLKIN net
@@ -581,20 +611,28 @@ struct GowinGlobalRouter
         WireId src = ctx->getBelPinWire(driver.cell->bel, port);
 
         std::vector<PipId> path;
+        std::vector<PortRef> unrouted;
         RouteResult route_result;
         if (gwu.driver_is_mipi(driver)) {
             route_result = route_direct_net(
                     net, [&](PipId pip, WireId src_wire) { return segment_wire_filter(pip) && dcs_input_filter(pip); },
-                    src, &path);
+                    src, &path, &unrouted);
         } else {
             route_result = route_direct_net(
                     net,
                     [&](PipId pip, WireId src_wire) {
                         return global_pip_filter(pip, src) && segment_wire_filter(pip) && dcs_input_filter(pip);
                     },
-                    src, &path);
+                    src, &path, &unrouted);
         }
 
+        if (route_result != ROUTED_ALL) {
+            // Name the sinks, not just the net: a gated clock that reaches its
+            // divider and not the fast-clock pin of an IOLOGIC is a hole in
+            // the device model, and the message has to say which pin so the
+            // next person knows what to add rather than what to retry.
+            report_unreachable_sinks(net, unrouted);
+        }
         if (route_result == NOT_ROUTED) {
             log_error("Can't route the %s network.\n", ctx->nameOf(net));
         }

@@ -33,6 +33,9 @@ _gate-fast:
 	@python3 himbaechel/uarch/gowin/tests/check_hclk_6block.py
 	@python3 himbaechel/uarch/gowin/tests/check_arch_gen_deterministic.py
 	@$${GATE_PYTHON:-python3} himbaechel/uarch/gowin/tests/check_dcs_spines.py
+	@$${GATE_PYTHON:-python3} himbaechel/uarch/gowin/tests/check_hclk_to_fclk_138c.py
+	@python3 himbaechel/uarch/gowin/tests/check_constids_append_only.py
+	@python3 himbaechel/uarch/gowin/tests/check_iodelay_gw5a.py
 
 # branch: fast, plus evidence/criteria tools -- nextpnr owns none of those
 # (open-toolchain and the umbrella do); alias for fast (D94: "branch = fast

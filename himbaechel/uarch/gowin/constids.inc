@@ -1468,3 +1468,12 @@ X(DCE)
 // The block's fabric ports are aliased into its anchor cell by the chipdb, so
 // the bel needs no constid but its own.
 X(AE350_SOC)
+
+// The Arora V IODELAY: UG304-1.3.8E Table 4-47 gives the port set
+// IODELAY(DI, SDTAP, VALUE, DLYSTEP[7:0], DF, DO) -- no SETN -- and Table 4-48
+// the parameters C_STATIC_DLY (0..255), DYN_DLY_EN and ADAPT_EN.
+// C_STATIC_DLY, SDTAP, VALUE and DF already exist above and are reused; these
+// three are the ones the pre-5A delay line has no equivalent for.
+X(DLYSTEP)
+X(DYN_DLY_EN)
+X(ADAPT_EN)
