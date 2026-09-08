@@ -142,10 +142,33 @@ def test_iodelay_gw5a_moves_dlystep():
     assert len(iologic) == 1, f"expected one IOLOGIC cell, got {sorted(iologic)}"
     cell = next(iter(iologic.values()))
     steps = [p for p in cell["connections"] if p.startswith("DLYSTEP")]
-    assert len(steps) == 8, f"DLYSTEP bits bound: {sorted(steps)}"
+    # MEASURED (`P3.T22`, `P3.T16a`): in static mode the vendor ties the
+    # DLYSTEP bus to the rail and programs the delay from `C_STATIC_DLY`
+    # alone, and the packer now does the same -- which is what took the
+    # `iodelay` row's `conns` from 8 to 1.  This netlist declares
+    # `DYN_DLY_EN=FALSE`, so eight *bound* bits would be the defect, not the
+    # pass; the check asserted them because it was written before the
+    # measurement.
+    assert steps == [], f"static-mode DLYSTEP bits bound: {sorted(steps)}"
     assert not [p for p in cell["connections"] if p == "SETN"]
     assert cell["parameters"].get("C_STATIC_DLY") is not None
-    return f"8 DLYSTEP bits, 0 SETN, C_STATIC_DLY forwarded"
+    return "0 DLYSTEP bits in static mode, 0 SETN, C_STATIC_DLY forwarded"
+
+
+def test_iodelay_gw5a_dynamic_mode_is_refused_by_name():
+    """A device with no DLYSTEP wire cannot serve a dynamic delay, and says so."""
+    if not (NEXTPNR and CHIPDB):
+        return "not run: set NEXTPNR_HIMBAECHEL and GOWIN_CHIPDB_138C"
+    netlist = _netlist()
+    dly = netlist["modules"]["top"]["cells"]["dly"]
+    dly["parameters"]["DYN_DLY_EN"] = "TRUE"
+    rc, log, _packed = _pack(netlist)
+    if "Can't place IOLOGIC" in log:
+        return "not run: the chipdb has no IOLOGIC bel at the constrained pin"
+    assert rc != 0, "a dynamically loaded delay was accepted on a device with no DLYSTEP wire"
+    assert "asks for a dynamically loaded delay" in log and "DLYSTEP wire" in log, \
+        f"the refusal does not name the missing wire:\n{log}"
+    return "refused by name"
 
 
 def test_iodelay_gw1n_setn_unchanged():
@@ -162,12 +185,27 @@ def test_iodelay_gw5a_branch_moves_eight_bits_and_no_setn():
     """The 5A branch, read off the source the live pack cannot reach yet."""
     source = _pack_iodelay_source()
     assert "id_DLYSTEP" in source
-    assert re.search(r"for \(int i = 0; i < 8; \+\+i\) \{\s*IdString bit = "
-                     r"ctx->idf\(\"%s\[%d\]\", id_DLYSTEP\.c_str\(ctx\), i\);\s*"
-                     r"ci\.movePortTo\(bit, iologic, bit\);", source)
-    # The discriminator is the cell's own port set, never a device name.
+    # All eight bits, each either moved onto the IOLOGIC or explicitly
+    # disconnected -- the second branch is what a static delay takes, where
+    # the vendor ties the bus to the rail (MEASURED, the `iodelay` row's
+    # `conns` 8 -> 1).  Pinning the exact statement sequence instead would
+    # make the guard fail the next time the loop body grows a case, which is
+    # what it did.
+    loop = re.search(r"for \(int i = 0; i < 8; \+\+i\) \{(.*?)\n            \}",
+                     source, re.S)
+    assert loop, "the DLYSTEP bus is no longer walked eight bits at a time"
+    body = loop.group(1)
+    assert 'ctx->idf("%s[%d]", id_DLYSTEP.c_str(ctx), i)' in body
+    assert "ci.movePortTo(bit, iologic, bit);" in body
+    assert "ci.disconnectPort(bit);" in body
+    # The discriminator is the cell's own port set, never a device name --
+    # asserted against the *code*, because a comment that names the die it was
+    # measured on is exactly the provenance these files are supposed to carry.
     assert "is_gw5a_delay = ci.ports.count(" in source
-    assert not re.search(r"GW5A[A-Z]*-\d", source)
+    code = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+    code = re.sub(r"//[^\n]*", "", code)
+    assert not re.search(r"GW5A[A-Z]*-\d", code), \
+        "the 5A branch discriminates on a device name instead of a port set"
     for parm in ("id_DYN_DLY_EN", "id_ADAPT_EN"):
         assert parm in source
     return None
